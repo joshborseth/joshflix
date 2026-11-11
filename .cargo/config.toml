@@ -1,0 +1,5 @@
+[alias]
+xtask = "run -q -p xtask --"
+
+[env]
+# Keep parallel rustc jobs modest: this box's 15 GB RAM is shared with other agents.

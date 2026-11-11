@@ -1,0 +1,16 @@
+[package]
+name = "joshflix-app"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+name = "joshflix_app"
+crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "joshflix"
+path = "src/main.rs"
+
+[dependencies]
