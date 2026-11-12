@@ -44,6 +44,9 @@ pub struct PlayerConfig {
     pub user_agent: String,
     /// Directory for mpv's config/cache, if any.
     pub config_dir: Option<String>,
+    /// Android audio session for the AudioTrack output, so the app can attach
+    /// audio effects to it (Audio Normalization). `None` lets AudioTrack pick.
+    pub audio_session: Option<i32>,
 }
 
 impl PlayerConfig {
@@ -57,6 +60,7 @@ impl PlayerConfig {
             cache_mib: if android { 96 } else { 256 },
             user_agent: concat!("Joshflix/", env!("CARGO_PKG_VERSION")).into(),
             config_dir: None,
+            audio_session: None,
         }
     }
 }
@@ -380,6 +384,10 @@ impl Player {
         if let Some(ao) = &config.audio_output {
             options.push(("ao", ao));
         }
+        let audio_session = config.audio_session.map(|id| id.to_string());
+        if let Some(id) = &audio_session {
+            options.push(("audiotrack-session-id", id));
+        }
         for (name, value) in options {
             inner.set_option(name, value);
         }
@@ -517,8 +525,11 @@ impl Player {
         self.set_property("sub-scale", &format!("{:.2}", scale.clamp(0.5, 2.5)))
     }
 
-    /// Night mode: compress dynamics so dialogue is audible and loud scenes are tamed.
-    pub fn set_night_mode(&self, enabled: bool) -> Result<()> {
+    /// Audio Normalization through mpv's lavfi filters: compress dynamics so
+    /// dialogue is audible and loud scenes are tamed. Needs an FFmpeg with
+    /// audio filters, which Android's bundled libmpv lacks (the app uses a
+    /// platform audio effect there).
+    pub fn set_audio_normalization(&self, enabled: bool) -> Result<()> {
         let filter = if enabled {
             "lavfi=[acompressor=threshold=-24dB:ratio=4:attack=10:release=250:makeup=6dB,alimiter=limit=0.9]"
         } else {

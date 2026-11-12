@@ -349,8 +349,10 @@ impl VideoHost {
     }
 
     /// Create an mpv instance whose events go to the controller, tagged with an id.
-    pub fn create_player(compat_mode: bool) -> Result<(Player, u64), String> {
+    /// `audio_session` is the platform's audio session for mpv's AudioTrack output.
+    pub fn create_player(compat_mode: bool, audio_session: Option<i32>) -> Result<(Player, u64), String> {
         let mut config = joshflix_player::PlayerConfig::for_platform();
+        config.audio_session = audio_session;
         if compat_mode && cfg!(target_os = "android") && std::env::var("JOSHFLIX_HWDEC").is_err() {
             config.hwdec = "mediacodec-copy,no".into();
         }

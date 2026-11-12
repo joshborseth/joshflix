@@ -37,7 +37,7 @@ enum Action {
     RemoveKey,
     AutoplayNext,
     FrameRate,
-    NightMode,
+    AudioNormalization,
     VideoDecoding,
     SubtitlesOn,
     SubtitleLanguage,
@@ -151,7 +151,7 @@ impl Controller {
             1 => vec![
                 Item::toggle("Autoplay next episode", s.autoplay_next, "Counts down 10 seconds in the last minute", Action::AutoplayNext),
                 Item::toggle("Match frame rate", s.frame_rate_matching, "Switches the TV to the video's frame rate (24p…) when supported", Action::FrameRate),
-                Item::toggle("Night mode by default", s.night_mode, "Quieter loud scenes, clearer dialogue. Toggle anytime in the player", Action::NightMode),
+                Item::toggle("Audio Normalization by default", s.audio_normalization, "Quieter loud scenes, clearer dialogue. Toggle anytime in the player", Action::AudioNormalization),
                 Item::choice(
                     "Video decoding",
                     match s.video_compat_mode {
@@ -294,7 +294,7 @@ impl Controller {
             }
             Action::AutoplayNext => self.save_settings(|s| s.autoplay_next = !s.autoplay_next),
             Action::FrameRate => self.save_settings(|s| s.frame_rate_matching = !s.frame_rate_matching),
-            Action::NightMode => self.save_settings(|s| s.night_mode = !s.night_mode),
+            Action::AudioNormalization => self.save_settings(|s| s.audio_normalization = !s.audio_normalization),
             Action::VideoDecoding => {
                 let next = cycle(&[None, Some(false), Some(true)], self.settings.video_compat_mode, step);
                 self.save_settings(|s| s.video_compat_mode = next);

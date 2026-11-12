@@ -24,6 +24,27 @@ pub trait Platform {
     fn can_install_updates(&self) -> bool;
     /// Human-readable device name for About.
     fn device_label(&self) -> String;
+    /// The audio session mpv's AudioTrack output should play on, so platform
+    /// effects can attach to it (Android only).
+    fn audio_session(&self) -> Option<i32> {
+        None
+    }
+    /// Turn Audio Normalization on or off with a platform audio effect, if the
+    /// platform provides one.
+    fn set_audio_normalization(&self, _on: bool) -> AudioNormalization {
+        AudioNormalization::Player
+    }
+}
+
+/// Who does Audio Normalization on this platform.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AudioNormalization {
+    /// The player's own filter (mpv's lavfi chain); the caller must set it.
+    Player,
+    /// A platform effect, which has just been switched.
+    Platform,
+    /// Neither works on this device.
+    Unavailable,
 }
 
 pub type InstallDone = Box<dyn FnOnce(Result<(), String>) + Send + 'static>;
@@ -105,12 +126,15 @@ pub mod android {
     use joshflix_core::release::DisplayCaps;
     use android_activity::{AndroidApp, WindowManagerFlags};
 
-    use super::Platform;
+    use super::{AudioNormalization, Platform};
+    use crate::audio_fx::Normalizer;
 
     pub struct Android {
         app: AndroidApp,
         vm: JavaVM,
         caps: DisplayCaps,
+        /// The session mpv plays on, with Audio Normalization's effect attached.
+        audio: Option<(i32, Normalizer)>,
         /// Bumped by every frame-rate change, so a pending UI request can tell it's stale.
         frame_rate_generation: Rc<Cell<u64>>,
     }
@@ -122,13 +146,24 @@ pub mod android {
         pub fn new(app: AndroidApp) -> Self {
             // SAFETY: android-activity hands us valid JavaVM and Activity pointers for the process lifetime.
             let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.expect("JavaVM");
-            let mut android = Self { app, vm, caps: DisplayCaps::SDR_1080, frame_rate_generation: Rc::default() };
+            let mut android = Self { app, vm, caps: DisplayCaps::SDR_1080, audio: None, frame_rate_generation: Rc::default() };
             android.caps = android.query_caps().unwrap_or_else(|e| {
                 tracing::warn!("display caps: {e}");
                 DisplayCaps::SDR_1080
             });
             tracing::info!("display caps: {:?}", android.caps);
+            android.audio = android.attach_audio_effect().inspect_err(|e| tracing::warn!("audio normalization: {e}")).ok();
             android
+        }
+
+        /// Generate mpv's audio session and attach Audio Normalization's effect to it.
+        fn attach_audio_effect(&self) -> Result<(i32, Normalizer), String> {
+            let sdk_int = self.sdk_int();
+            let mut env = self.vm.attach_current_thread().map_err(|e| e.to_string())?;
+            let session = crate::audio_fx::generate_session(&mut env, &self.activity())?;
+            let normalizer = Normalizer::attach(&mut env, session, sdk_int)?;
+            tracing::info!("audio normalization: {:?} on audio session {session}", normalizer.kind());
+            Ok((session, normalizer))
         }
 
         pub fn vm_ptr(&self) -> *mut c_void {
@@ -440,6 +475,29 @@ pub mod android {
             let maker = read(&mut env, "MANUFACTURER").unwrap_or_default();
             let model = read(&mut env, "MODEL").unwrap_or_default();
             format!("{maker} {model} · Android {}", self.sdk_int()).trim().to_owned()
+        }
+
+        fn audio_session(&self) -> Option<i32> {
+            self.audio.as_ref().map(|(session, _)| *session)
+        }
+
+        fn set_audio_normalization(&self, on: bool) -> AudioNormalization {
+            let Some((_, normalizer)) = &self.audio else { return AudioNormalization::Unavailable };
+            let result = self
+                .vm
+                .attach_current_thread()
+                .map_err(|e| e.to_string())
+                .and_then(|mut env| normalizer.set_enabled(&mut env, on));
+            match result {
+                Ok(()) => {
+                    tracing::info!("audio normalization {}", if on { "on" } else { "off" });
+                    AudioNormalization::Platform
+                }
+                Err(e) => {
+                    tracing::warn!("audio normalization: {e}");
+                    AudioNormalization::Unavailable
+                }
+            }
         }
     }
 }

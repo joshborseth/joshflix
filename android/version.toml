@@ -1,4 +1,4 @@
 # The app version. `cargo xtask apk` injects both values into the manifest.
 # Bump version_code (and version_name) for every release you publish.
-version_name = "0.1.4"
-version_code = 5
+version_name = "0.1.5"
+version_code = 6

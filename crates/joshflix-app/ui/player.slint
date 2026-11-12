@@ -57,7 +57,7 @@ export component PlayerOverlay inherits Rectangle {
     // Focus: 0 = seek bar, 1 = controls
     in property <int> zone;
     in property <int> control-index;
-    in property <bool> night-mode;
+    in property <bool> audio-normalization;
     in property <bool> has-next;
     in property <bool> subtitles-on;
     // Track menu
@@ -250,9 +250,9 @@ export component PlayerOverlay inherits Rectangle {
                 focused: root.zone == 1 && root.control-index == 4;
             }
             ControlButton {
-                icon: Icons.moon;
-                label: root.night-mode ? "Night mode on" : "Night mode off";
-                active: root.night-mode;
+                icon: Icons.normalize;
+                label: root.audio-normalization ? "Audio Normalization on" : "Audio Normalization off";
+                active: root.audio-normalization;
                 focused: root.zone == 1 && root.control-index == 5;
             }
             if root.has-next: ControlButton {

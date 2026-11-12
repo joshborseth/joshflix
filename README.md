@@ -27,7 +27,7 @@ A native Android TV app for movies and shows, written entirely in Rust. It takes
 - **Player.**
   - **Seeking:** ±10 s with the D-pad, ±30 s while held, with a preview before committing.
   - **Tracks:** audio and subtitle menus, with OpenSubtitles results added to the subtitle menu.
-  - **Night mode:** dynamic-range compression for clearer dialogue and quieter loud scenes.
+  - **Audio Normalization:** dynamic-range compression for clearer dialogue and quieter loud scenes (mpv's lavfi filters on desktop, Android's DynamicsProcessing effect on the TV).
   - **Frame-rate matching** on Android 11 and later.
   - **Next episode:** a card in the last minute ("Next Episode", "Season 3 Finale · Up next", "Final Episode") with a 10-second autoplay that picks the same release family.
 - **Remote.** Play/pause, rewind, fast-forward, next, captions and audio-track keys work in the player, and the Search key opens Search from anywhere. Back steps back through screens and leaves the app from Home.

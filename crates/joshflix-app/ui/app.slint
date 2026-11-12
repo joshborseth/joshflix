@@ -92,7 +92,7 @@ export global PlayerState {
     in property <string> seek-text;
     in property <int> zone;
     in property <int> control-index;
-    in property <bool> night-mode;
+    in property <bool> audio-normalization;
     in property <bool> has-next;
     in property <bool> subtitles-on;
     in property <bool> menu-open;
@@ -382,7 +382,7 @@ export component AppWindow inherits Window {
         seek-text: PlayerState.seek-text;
         zone: PlayerState.zone;
         control-index: PlayerState.control-index;
-        night-mode: PlayerState.night-mode;
+        audio-normalization: PlayerState.audio-normalization;
         has-next: PlayerState.has-next;
         subtitles-on: PlayerState.subtitles-on;
         menu-open: PlayerState.menu-open;

@@ -1,4 +1,4 @@
-//! Playback: overlay, seeking, tracks, night mode, progress and next episode.
+//! Playback: overlay, seeking, tracks, Audio Normalization, progress and next episode.
 
 use std::time::{Duration, Instant};
 
@@ -11,6 +11,7 @@ use slint::{Global, ModelRc, VecModel};
 use super::detail::{PlayContext, PlayRequest};
 use super::{Controller, Key, shared};
 use crate::format;
+use crate::platform::AudioNormalization;
 use crate::{PlayerState, Screen, TrackItem};
 
 const OVERLAY_SECS: u64 = 5;
@@ -84,7 +85,8 @@ pub struct PlayerCtl {
     last_mpv_error: Option<String>,
     /// Last overlay visibility pushed to mpv (to lift subtitles above the controls).
     overlay_shown: Option<bool>,
-    night: bool,
+    /// Audio Normalization is on.
+    normalize: bool,
 }
 
 impl PlayerCtl {
@@ -106,8 +108,8 @@ impl Controller {
         } else if self.screen != Screen::Player {
             self.back_stack.push(self.screen);
         }
-        let night = self.settings.night_mode;
-        let _ = player.set_night_mode(night);
+        let wanted = self.settings.audio_normalization;
+        let normalize = self.apply_audio_normalization(&player, wanted, false) && wanted;
         let _ = player.set_subtitle_scale(f64::from(self.settings.subtitle_scale));
         if let Err(e) = player.load(&url, request.resume_at) {
             self.toast(&e.to_string());
@@ -154,7 +156,7 @@ impl Controller {
             open_timed_out: false,
             last_mpv_error: None,
             overlay_shown: None,
-            night,
+            normalize,
         });
         let (title, subtitle) = super::video_title(&request.context.name, &request.video, request.context.episode_title.as_deref());
         let state = PlayerState::get(&self.ui);
@@ -163,7 +165,7 @@ impl Controller {
         state.set_error("".into());
         state.set_menu_open(false);
         state.set_next_visible(false);
-        state.set_night_mode(night);
+        state.set_audio_normalization(normalize);
         state.set_buffering(true);
         state.set_buffering_text("Loading…".into());
         self.set_screen(Screen::Player);
@@ -418,7 +420,7 @@ impl Controller {
         }
         state.set_zone(p.zone);
         state.set_control_index(p.control as i32);
-        state.set_night_mode(p.night);
+        state.set_audio_normalization(p.normalize);
         state.set_has_next(p.next.request.is_some());
         state.set_subtitles_on(p.subtitles_on);
         match &p.menu {
@@ -698,13 +700,34 @@ impl Controller {
         }
     }
 
+    /// Switch Audio Normalization with the platform's effect, or mpv's filter
+    /// where the platform has none. Returns false (after a toast when `tell`)
+    /// if this device can't normalize audio.
+    fn apply_audio_normalization(&mut self, player: &joshflix_player::Player, on: bool, tell: bool) -> bool {
+        match self.platform.set_audio_normalization(on) {
+            AudioNormalization::Platform => true,
+            AudioNormalization::Player => {
+                if let Err(e) = player.set_audio_normalization(on) {
+                    tracing::warn!("audio normalization: {e}");
+                }
+                true
+            }
+            AudioNormalization::Unavailable => {
+                if tell && on {
+                    self.toast("Audio Normalization isn't available on this TV");
+                }
+                false
+            }
+        }
+    }
+
     /// The fast decoder path stalled: remember compatibility mode for this TV and
     /// continue on a fresh mpv instance (the stalled one can't be stopped).
     fn recover_with_compat_mode(&mut self) {
         let Some(p) = self.player.take() else { return };
         // Saved once compatibility mode actually shows frames (see Started).
         self.pending_compat_save = true;
-        match crate::video::VideoHost::create_player(true) {
+        match crate::video::VideoHost::create_player(true, self.platform.audio_session()) {
             Ok(player) => {
                 self.video.replace_player(player, true);
                 let mut request = p.request.clone();
@@ -882,10 +905,17 @@ impl Controller {
                 3 => self.open_track_menu(TrackKind::Audio),
                 4 => self.open_track_menu(TrackKind::Subtitle),
                 5 => {
-                    p.night = !p.night;
-                    let night = p.night;
-                    let _ = player.set_night_mode(night);
-                    self.toast(if night { "Night mode on: quieter loud scenes, clearer dialogue" } else { "Night mode off" });
+                    p.normalize = !p.normalize;
+                    let normalize = p.normalize;
+                    if self.apply_audio_normalization(&player, normalize, true) {
+                        self.toast(if normalize {
+                            "Audio Normalization on: quieter loud scenes, clearer dialogue"
+                        } else {
+                            "Audio Normalization off"
+                        });
+                    } else if let Some(p) = self.player.as_mut() {
+                        p.normalize = false;
+                    }
                 }
                 6 => {
                     self.play_next();

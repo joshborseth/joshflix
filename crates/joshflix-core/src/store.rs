@@ -42,7 +42,9 @@ pub struct Settings {
     pub subtitle_languages: Vec<String>,
     /// Subtitle text scale (1.0 = default).
     pub subtitle_scale: f32,
-    pub night_mode: bool,
+    /// Turn Audio Normalization on when playback starts.
+    #[serde(alias = "night_mode")]
+    pub audio_normalization: bool,
     pub frame_rate_matching: bool,
     pub autoplay_next: bool,
     /// Decode with MediaCodec copy-back instead of zero-copy (for TVs whose
@@ -63,7 +65,7 @@ impl Default for Settings {
             subtitles_enabled: true,
             subtitle_languages: vec!["eng".to_owned()],
             subtitle_scale: 1.0,
-            night_mode: false,
+            audio_normalization: false,
             frame_rate_matching: true,
             autoplay_next: true,
             video_compat_mode: None,
@@ -360,6 +362,14 @@ mod tests {
         assert!(saved.has_rd_key());
         assert_eq!(store.settings().unwrap(), saved);
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn night_mode_setting_carries_over_to_audio_normalization() {
+        let old: Settings = serde_json::from_str(r#"{"night_mode":true}"#).unwrap();
+        assert!(old.audio_normalization);
+        let saved = serde_json::to_string(&old).unwrap();
+        assert!(saved.contains("\"audio_normalization\":true") && !saved.contains("night_mode"));
     }
 
     #[test]

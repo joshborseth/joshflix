@@ -9,6 +9,8 @@ mod android_platform;
 #[cfg(target_os = "android")]
 mod vsync;
 mod app;
+#[cfg(target_os = "android")]
+mod audio_fx;
 mod format;
 mod keyboard;
 mod logsink;
@@ -87,7 +89,7 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     // uses by default, and zero-copy through AImageReader stalled on the only
     // Android device it was tried on. "Hardware" in Settings opts into zero-copy.
     let compat = services.store.settings().ok().and_then(|s| s.video_compat_mode).unwrap_or(true);
-    video.set_player(VideoHost::create_player(compat), compat);
+    video.set_player(VideoHost::create_player(compat, platform.audio_session()), compat);
     video.attach(&ui);
 
     AppState::get(&ui).on_key(|key| {
