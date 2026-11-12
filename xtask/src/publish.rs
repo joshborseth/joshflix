@@ -30,16 +30,20 @@ pub fn publish(notes: Option<&str>) -> Result<()> {
         None => String::new(),
     };
 
+    // Publish every ABI that was built (x86_64 only matters for emulators).
     let apks: Vec<(Abi, PathBuf)> = Abi::ALL
         .iter()
         .map(|&abi| (abi, apk::apk_path(&version, abi, false)))
+        .filter(|(abi, path)| {
+            let present = path.is_file();
+            if !present {
+                eprintln!("note: no {abi:?} APK at {}; TVs with that ABI won't see this update", path.display());
+            }
+            present
+        })
         .collect();
+    ensure!(!apks.is_empty(), "no release APKs in dist/; run `cargo xtask apk` first");
     for (_, path) in &apks {
-        ensure!(
-            path.is_file(),
-            "{} missing; run `cargo xtask apk --abi all` first",
-            path.display()
-        );
         check_badging(&sdk, path, &version)?;
     }
 

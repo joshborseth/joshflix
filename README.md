@@ -4,8 +4,10 @@
 
 A native Android TV app for movies and shows, written entirely in Rust. It takes the shape of the Stremio TV app (catalogs, detail pages, a source picker, a full-featured player) with its own design and code, and streams through Real-Debrid like Jedflix.
 
-- **UI:** [Slint](https://slint.dev) 1.18, GPU-rendered (Skia on Android, femtovg on desktop), D-pad first.
-- **Playback:** libmpv (Stremio's prebuilt Android build: mpv + FFmpeg + libass) with MediaCodec hardware decoding, drawn into the UI's OpenGL context. Plays MKV, DTS, TrueHD, ASS subtitles and HDR.
+- **UI:** [Slint](https://slint.dev) 1.18 with its femtovg OpenGL renderer, D-pad first. On Android it runs on our own small platform layer (`src/android_platform.rs`: android-activity, glutin EGL, femtovg) instead of Slint's Skia backend. That keeps 32-bit ARM TVs supported, lets mpv draw into the same GL context, and lets the remote's media keys reach the player.
+- **Playback:** libmpv (Stremio's prebuilt Android build: mpv + FFmpeg + libass) with MediaCodec hardware decoding, drawn underneath the UI in the same OpenGL context. Plays MKV, DTS, TrueHD, ASS subtitles and HDR.
+  - Every blocking mpv call runs on a control thread, so the UI never waits on the decoder.
+  - If a TV's driver stalls on zero-copy decoding, the app continues on a fresh mpv instance in compatibility (copy-back) mode and remembers that choice.
 - **Titles and artwork:** Cinemeta (Stremio's keyless metadata service).
 - **Sources:** ElfHosted's public Comet with your Real-Debrid key. Cached sources (⚡) start instantly through Comet's redirect. Uncached ones resolve on the TV with live Real-Debrid download progress.
 - **Subtitles:** the file's own tracks plus Stremio's keyless OpenSubtitles service.
@@ -28,7 +30,8 @@ A native Android TV app for movies and shows, written entirely in Rust. It takes
   - **Night mode:** dynamic-range compression for clearer dialogue and quieter loud scenes.
   - **Frame-rate matching** on Android 11 and later.
   - **Next episode:** a card in the last minute ("Next Episode", "Season 3 Finale · Up next", "Final Episode") with a 10-second autoplay that picks the same release family.
-- **Settings.** Real-Debrid account (change or remove key), playback toggles, subtitle language and size, source filters and About with a self-updater.
+- **Remote.** Play/pause, rewind, fast-forward, next, captions and audio-track keys work in the player, and the Search key opens Search from anywhere. Back steps back through screens and leaves the app from Home.
+- **Settings.** Real-Debrid account (change or remove key), playback toggles (including video decoding mode), subtitle language and size, source filters and About with a self-updater.
 
 ## Repository layout
 
@@ -61,6 +64,14 @@ Useful environment variables (desktop only):
 | `JOSHFLIX_SERVER_URL` | Relay base URL (default `http://192.168.1.67:8788`; also a build-time setting for Android). |
 | `JOSHFLIX_COMET_URL` | Point at a different Comet instance, for example a local mock. |
 | `JOSHFLIX_DISPLAY=sdr1080` | Pretend the screen is a 1080p SDR TV, to test **Match my TV**. |
+| `JOSHFLIX_HWDEC`, `JOSHFLIX_MPV_LOG=v` | Override mpv's hardware decoding and log level. |
+
+On a TV or emulator, put the same `JOSHFLIX_*=value` lines in a `dev.env` file in the app's private data folder (needs `adb root` or `run-as`):
+
+```sh
+adb root
+adb push dev.env /data/data/com.joshflix.tv/files/dev.env
+```
 
 Tests:
 
