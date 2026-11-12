@@ -39,6 +39,7 @@ enum Action {
     FrameRate,
     AudioNormalization,
     VideoDecoding,
+    VideoLayer,
     SubtitlesOn,
     SubtitleLanguage,
     SubtitleSize,
@@ -162,7 +163,17 @@ impl Controller {
                     "Automatic copies decoded frames, which works on every TV. Hardware skips the copy but can show a black screen. Applies after restarting Joshflix",
                     Action::VideoDecoding,
                 ),
-            ],
+            ]
+            .into_iter()
+            .chain(cfg!(target_os = "android").then(|| {
+                Item::toggle(
+                    "Separate video layer",
+                    !self.video_layer_marker().exists(),
+                    "Video plays on its own layer under the menus. Turn off if video stays black. Applies after restarting Joshflix",
+                    Action::VideoLayer,
+                )
+            }))
+            .collect(),
             2 => {
                 let lang = s.subtitle_languages.first().map(|c| joshflix_core::subtitles::language_name(c)).unwrap_or("English");
                 let size = SIZES.iter().min_by(|a, b| (a.0 - s.subtitle_scale).abs().total_cmp(&(b.0 - s.subtitle_scale).abs())).map_or("Medium", |s| s.1);
@@ -299,6 +310,14 @@ impl Controller {
                 let next = cycle(&[None, Some(false), Some(true)], self.settings.video_compat_mode, step);
                 self.save_settings(|s| s.video_compat_mode = next);
             }
+            Action::VideoLayer => {
+                // Read by MainActivity when the app starts.
+                let marker = self.video_layer_marker();
+                let result = if marker.exists() { std::fs::remove_file(&marker) } else { std::fs::write(&marker, b"off") };
+                if let Err(e) = result {
+                    self.toast(&format!("Couldn't change the video layer: {e}"));
+                }
+            }
             Action::SubtitlesOn => self.save_settings(|s| s.subtitles_enabled = !s.subtitles_enabled),
             Action::HideJunk => self.save_settings(|s| s.filters.hide_junk = !s.filters.hide_junk),
             Action::MatchDisplay => self.save_settings(|s| s.filters.match_display = !s.filters.match_display),
@@ -327,6 +346,11 @@ impl Controller {
             _ => return,
         }
         self.build_settings();
+    }
+
+    /// Exists while the user turned off the separate video layer (Android).
+    fn video_layer_marker(&self) -> std::path::PathBuf {
+        self.platform.data_dir().join("single-surface-user")
     }
 
     // ---- updates ----

@@ -93,6 +93,8 @@ The AAR has no C headers. The player crate declares the mpv and `av_jni_*` funct
 - The only Java code is `com.joshflix.tv.MainActivity` (`android/java`), a `NativeActivity` subclass that stacks two `SurfaceView`s: mpv's video surface at the bottom and a translucent UI surface on top, which it hands to the native side in place of the window's surface. The native side reaches it through the activity's class loader (`src/video_surface.rs`): it registers `nativeVideoSurface`, attaches mpv to that surface while the player is open, and confirms the first UI frame.
   That version of the app then uses a single surface for good (`files/single-surface` holds its version code) when:
   - no UI frame is confirmed within 15 s (the activity also closes, so reopening works);
-  - the process died while mpv was starting on the video surface, before video showed (`files/video-surface-attempt` was left behind);
-  - playback runs 8 s with a video track but no picture on mpv's surface. The app then also switches to drawing video into the UI right away, on a fresh mpv instance. Anything else that needs Java APIs, such as installing a downloaded update with `PackageInstaller`, goes through JNI on the `JavaVM`.
+  - the process died twice before the UI's first frame, or twice while mpv was starting on the video surface before video had played for 3 s (`files/ui-attempt` and `files/video-surface-attempt` are left behind; `files/*-strikes` count them);
+  - playback runs 8 s with a video track but no picture on mpv's surface. "Picture" means `video-out-params/w` equals the decoder's `video-params/w`: with `force-window` or `vo=null`, the output reports a dummy 960 px frame. The app then also switches to drawing video into the UI right away, on a fresh mpv instance.
+
+  Settings → Playback → **Separate video layer** turns layering off by hand (`files/single-surface-user`), for the case no check can see: video that plays but is hidden. Anything else that needs Java APIs, such as installing a downloaded update with `PackageInstaller`, goes through JNI on the `JavaVM`.
 - The window background is `#0B0D12` (theme `Theme.Joshflix`), so the first frame should match it.

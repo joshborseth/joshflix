@@ -541,12 +541,10 @@ pub fn shows_on_own_surface(player: &Player) -> bool {
     }
 }
 
-/// mpv's video output started showing video.
-pub fn video_shown(player: &Player) {
-    if shows_on_own_surface(player) {
-        #[cfg(target_os = "android")]
-        crate::video_surface::video_worked();
-    }
+/// Video has played on mpv's own surface for a while: that path works here.
+pub fn confirm_own_surface() {
+    #[cfg(target_os = "android")]
+    crate::video_surface::video_worked();
 }
 
 /// Video never appeared on mpv's own surface: draw it into the UI from now on.

@@ -20,8 +20,8 @@
 //!   drawing video into the UI right away.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, mpsc};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
 use std::time::{Duration, Instant};
 
 use jni::objects::{GlobalRef, JClass, JObject, JValue};
@@ -52,7 +52,14 @@ struct State {
     want_video: bool,
     /// The instance attached to `surface` (possibly still attaching).
     attached: Option<Player>,
+    /// How the attach call for `attached` went (see [`ATTACHING`]).
+    attach_status: Option<Arc<AtomicU8>>,
 }
+
+/// `State::attach_status` values.
+const ATTACHING: u8 = 0;
+const ATTACHED: u8 = 1;
+const ATTACH_FAILED: u8 = 2;
 
 static VM: OnceLock<JavaVM> = OnceLock::new();
 static STATE: Mutex<State> = Mutex::new(State {
@@ -62,6 +69,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     current: None,
     want_video: false,
     attached: None,
+    attach_status: None,
 });
 /// Held for every blocking mpv call, so the surface can't be destroyed under one.
 static MPV_CALLS: Mutex<()> = Mutex::new(());
@@ -90,14 +98,16 @@ pub fn init(vm: *mut c_void, activity: *mut c_void) -> bool {
     ENABLED.store(false, Ordering::Relaxed);
     UI_SHOWN.store(false, Ordering::Relaxed);
     VIDEO_WORKED.store(false, Ordering::Relaxed);
-    {
-        // Nothing from an earlier activity in this process is valid now.
+    // Nothing from an earlier activity in this process is valid now. Dropped
+    // outside the lock: the last Player clone shuts its mpv instance down.
+    let stale = {
         let mut state = state();
-        if state.attached.take().is_some() {
+        if state.attached.is_some() {
             abandon(state.surface.take());
         }
-        *state = State::default();
-    }
+        std::mem::take(&mut *state)
+    };
+    drop(stale);
     match try_init(vm, activity) {
         Ok(true) => {
             tracing::info!("video: own surface under the UI");
@@ -170,8 +180,10 @@ fn try_init(vm_ptr: *mut c_void, activity: *mut c_void) -> Result<bool, String> 
     }
     ENABLED.store(true, Ordering::Relaxed);
     // The callback may run right away, on this thread, with the current surface.
-    env.call_static_method(&class, "startVideoSurfaceUpdates", "()V", &[])
-        .map_err(|e| describe(&mut env, e))?;
+    if let Err(e) = env.call_static_method(&class, "startVideoSurfaceUpdates", "()V", &[]) {
+        ENABLED.store(false, Ordering::Relaxed);
+        return Err(describe(&mut env, e));
+    }
     Ok(true)
 }
 
@@ -235,16 +247,18 @@ pub fn want_video(on: bool) {
     wake();
 }
 
-/// `player` is attached to the video surface.
+/// `player` finished attaching to the video surface.
 pub fn is_attached(player: &Player) -> bool {
-    state().attached.as_ref().is_some_and(|p| p.same_instance(player))
+    let state = state();
+    state.attached.as_ref().is_some_and(|p| p.same_instance(player))
+        && state.attach_status.as_ref().is_some_and(|s| s.load(Ordering::Acquire) == ATTACHED)
 }
 
-/// mpv showed video on its own surface: this path works on this TV.
+/// mpv has shown video on its own surface for a while: this path works on this TV.
 pub fn video_worked() {
     if !VIDEO_WORKED.swap(true, Ordering::Relaxed) {
         tracing::info!("video shows on its own surface");
-        call_activity_static("layeredVideoWorked");
+        call_activity_static("layeredVideoConfirmed");
     }
 }
 
@@ -263,28 +277,47 @@ fn wake() {
     }
 }
 
-/// On the worker thread: attach the instance that should show video, if any,
-/// and detach any other.
-fn reconcile() {
-    let _calls = mpv_calls();
-    let (desired, attached) = {
-        let state = state();
-        let desired = if enabled() && state.want_video && state.surface.is_some() { state.current.clone() } else { None };
-        (desired, state.attached.clone())
-    };
-    match (&attached, &desired) {
-        (Some(a), Some(d)) if a.same_instance(d) => return,
-        (None, None) => return,
-        _ => {}
+/// The instance that should be attached now, and the attached one.
+fn wanted_and_attached() -> (Option<Player>, Option<Player>) {
+    let state = state();
+    let wanted = if enabled() && state.want_video && state.surface.is_some() { state.current.clone() } else { None };
+    (wanted, state.attached.clone())
+}
+
+fn already_right(wanted: &Option<Player>, attached: &Option<Player>) -> bool {
+    match (attached, wanted) {
+        (Some(a), Some(w)) => a.same_instance(w),
+        (None, None) => true,
+        _ => false,
     }
-    if attached.is_some() && !detach_attached() {
-        // The old instance still holds the surface; get a fresh one. Attaching
-        // continues when the new surface arrives.
-        tracing::warn!("video surface: previous player is stuck; making a new surface");
-        recreate_surface();
+}
+
+/// On the worker thread: attach the instance that should show video, if any,
+/// and detach any other. [`MPV_CALLS`] is held for one mpv call at a time, so
+/// `surfaceDestroyed` never waits behind more than one.
+fn reconcile() {
+    {
+        let _calls = mpv_calls();
+        let (wanted, attached) = wanted_and_attached();
+        if already_right(&wanted, &attached) {
+            return;
+        }
+        if attached.is_some() && !detach_attached() {
+            // The old instance may still hold the surface; get a fresh one.
+            // Attaching continues when the new surface arrives.
+            tracing::warn!("video surface: previous player didn't let go; making a new surface");
+            recreate_surface();
+            return;
+        }
+    }
+    let _calls = mpv_calls();
+    let (wanted, attached) = wanted_and_attached();
+    if attached.is_some() || already_right(&wanted, &attached) {
+        // Changed meanwhile; the wake that changed it runs another pass.
         return;
     }
-    let Some(player) = desired else { return };
+    let Some(player) = wanted else { return };
+    let status = Arc::new(AtomicU8::new(ATTACHING));
     let (wid, width, height) = {
         let mut state = state();
         let Some(surface) = state.surface.as_ref() else { return };
@@ -292,13 +325,20 @@ fn reconcile() {
         // Recorded before the call: if it times out, mpv may still take the
         // surface, so it must be detached (or abandoned) like an attached one.
         state.attached = Some(player.clone());
+        state.attach_status = Some(status.clone());
         target
     };
     if !VIDEO_WORKED.load(Ordering::Relaxed) {
         call_activity_static("layeredVideoStarting");
     }
     tracing::info!("video surface: attaching player ({width}x{height})");
-    match with_timeout("attach", player, move |p| p.attach_android_surface(wid, width, height)) {
+    let call_status = status.clone();
+    let outcome = with_timeout("attach", player, move |p| {
+        let result = p.attach_android_surface(wid, width, height);
+        call_status.store(if result.is_ok() { ATTACHED } else { ATTACH_FAILED }, Ordering::Release);
+        result
+    });
+    match outcome {
         Outcome::Done => {}
         Outcome::Failed => {
             detach_attached();
@@ -309,11 +349,21 @@ fn reconcile() {
 }
 
 /// Detach the attached instance (caller holds [`MPV_CALLS`]). Returns whether
-/// mpv let go of the surface. If it didn't, the surface reference is
-/// abandoned, never freed, since mpv may still use it.
+/// mpv let go of the surface. If it didn't, or an attach call is still running
+/// (it could set `wid` after the detach), the surface reference is abandoned,
+/// never freed, since mpv may still use it.
 fn detach_attached() -> bool {
-    let Some(player) = state().attached.take() else { return true };
-    let released = matches!(with_timeout("detach", player, |p| p.detach_android_surface()), Outcome::Done);
+    let (player, status) = {
+        let mut state = state();
+        (state.attached.take(), state.attach_status.take())
+    };
+    let Some(player) = player else { return true };
+    let attach_running = status.is_some_and(|s| s.load(Ordering::Acquire) == ATTACHING);
+    let detached = matches!(with_timeout("detach", player, |p| p.detach_android_surface()), Outcome::Done);
+    let released = detached && !attach_running;
+    if attach_running {
+        tracing::warn!("video surface: detached while an attach was still running; keeping the surface reference");
+    }
     if released {
         // mpv let go cleanly, so nothing crashed on this path.
         call_activity_static("layeredVideoWorked");

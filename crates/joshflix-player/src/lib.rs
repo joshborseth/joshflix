@@ -154,8 +154,10 @@ pub enum PlayerEvent {
     VideoSize { width: i64, height: i64 },
     /// Seconds of media buffered ahead of the playhead.
     CacheAhead(f64),
-    /// The video output shows video (`video-out-params` exist), or stopped.
-    VideoOutput(bool),
+    /// Width of the frames the video output was set up for (`video-out-params/w`),
+    /// 0 when it has none. With `force-window` or `vo=null` this can be a dummy
+    /// size without any video: compare with [`PlayerEvent::VideoSize`].
+    VideoOutputWidth(i64),
     /// Running totals for this file: frames dropped by the video output, and
     /// by the decoder.
     DroppedByOutput(i64),
@@ -435,7 +437,6 @@ impl Player {
             (OBS_SELECTION, "sid", MPV_FORMAT_NONE),
             (OBS_SELECTION, "aid", MPV_FORMAT_NONE),
             (OBS_CACHE_AHEAD, "demuxer-cache-duration", MPV_FORMAT_DOUBLE),
-            // Unlike vo-configured, this stays unset with force-window and no video.
             (OBS_VIDEO_OUT, "video-out-params/w", MPV_FORMAT_INT64),
             (OBS_OUTPUT_DROPS, "frame-drop-count", MPV_FORMAT_INT64),
             (OBS_DECODER_DROPS, "decoder-frame-drop-count", MPV_FORMAT_INT64),
@@ -666,11 +667,13 @@ fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &
                     continue;
                 }
                 if event.reply_userdata == OBS_VIDEO_OUT {
-                    let shown = prop.format == MPV_FORMAT_INT64
-                        && !prop.data.is_null()
+                    let width = if prop.format == MPV_FORMAT_INT64 && !prop.data.is_null() {
                         // SAFETY: MPV_FORMAT_INT64 points at an i64.
-                        && unsafe { *(prop.data as *const i64) } > 0;
-                    on_event(PlayerEvent::VideoOutput(shown));
+                        unsafe { *(prop.data as *const i64) }
+                    } else {
+                        0
+                    };
+                    on_event(PlayerEvent::VideoOutputWidth(width));
                     continue;
                 }
                 if prop.data.is_null() {

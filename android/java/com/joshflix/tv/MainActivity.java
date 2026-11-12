@@ -32,16 +32,17 @@ import java.nio.file.Files;
  * OpenGL context, and losing the UI surface no longer stops the video.
  *
  * <p>If anything here fails, the activity keeps NativeActivity's single
- * window surface and the app draws video into the UI as before. This
- * version of the app stops layering for good (the {@code single-surface}
- * marker) when:
+ * window surface and the app draws video into the UI as before. A version of
+ * the app stops layering for good ({@code single-surface} holds its version
+ * code) when:
  * <ul>
- * <li>the UI never shows a frame on the layered surface (it then closes, so
- *     reopening it works);</li>
- * <li>the process died while mpv was starting on the video surface and before
- *     video showed ({@code video-surface-attempt} was left behind);</li>
+ * <li>the UI never shows a frame on the layered surface within 15 s (the app
+ *     then closes, so reopening it works);</li>
+ * <li>the process died twice before the UI's first frame, or twice while mpv
+ *     was starting on the video surface (attempt markers left behind);</li>
  * <li>the native side reports that video never appeared.</li>
  * </ul>
+ * The user can also turn layering off in Settings ({@code single-surface-user}).
  *
  * <p>The static helpers called by the native side never lock
  * {@code MainActivity.class}: the native side calls them while
@@ -50,18 +51,27 @@ import java.nio.file.Files;
 public class MainActivity extends NativeActivity {
     private static final String TAG = "joshflix";
     /** Holds the version code whose layered surfaces failed. */
-    private static final String SINGLE_SURFACE_MARKER = "single-surface";
-    /** Holds the version code while mpv starts on the video surface. */
-    private static final String ATTEMPT_MARKER = "video-surface-attempt";
+    private static final String SINGLE_SURFACE = "single-surface";
+    /** Exists while the user turned layering off in Settings (written by the native side). */
+    private static final String SINGLE_SURFACE_USER = "single-surface-user";
+    /** Hold the version code until the UI's first frame / until video showed. */
+    private static final String UI_ATTEMPT = "ui-attempt";
+    private static final String VIDEO_ATTEMPT = "video-surface-attempt";
+    /** "versionCode count" of attempts that died, per kind. */
+    private static final String UI_STRIKES = "ui-strikes";
+    private static final String VIDEO_STRIKES = "video-surface-strikes";
+    /** Attempts that may die before a version stops layering. */
+    private static final int MAX_STRIKES = 2;
     /** How long the UI gets to draw its first frame on the layered surface. */
     private static final long UI_TIMEOUT_MS = 15_000;
 
+    /** Layering state read by the native side: 0 pending, 1 layered, 2 single surface. */
+    private static volatile int layerState = 0;
     private static volatile boolean uiShown;
     private static volatile File filesDir;
     private static volatile long appVersionCode;
-
-    /** Layering state read by the native side: 0 pending, 1 layered, 2 single surface. */
-    private static volatile int layerState = 0;
+    /** The activity whose surfaces the native side follows. */
+    private static volatile MainActivity current;
 
     // Guarded by MainActivity.class.
     private static Surface videoSurface;
@@ -78,6 +88,7 @@ public class MainActivity extends NativeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         layerState = 0;
         uiShown = false;
+        current = this;
         synchronized (MainActivity.class) {
             // A previous activity in this process may have left these behind.
             listening = false;
@@ -85,15 +96,12 @@ public class MainActivity extends NativeActivity {
         }
         filesDir = getFilesDir();
         appVersionCode = versionCode();
-        File attempt = new File(filesDir, ATTEMPT_MARKER);
-        if (attempt.isFile() && markerMatchesVersion(attempt)) {
-            Log.e(TAG, "the app died while starting video on its own surface; using a single surface");
-            writeMarker(SINGLE_SURFACE_MARKER);
+        boolean layer = decideLayering();
+        if (layer) {
+            writeMarker(UI_ATTEMPT);
         }
-        deleteQuietly(attempt);
         super.onCreate(savedInstanceState);
-        if (layeringFailedBefore()) {
-            Log.w(TAG, "layered surfaces failed in this version before; using a single surface");
+        if (!layer) {
             layerState = 2;
             return;
         }
@@ -114,120 +122,52 @@ public class MainActivity extends NativeActivity {
         } catch (Throwable t) {
             Log.e(TAG, "layered surfaces unavailable; video shares the UI surface", t);
             getWindow().takeSurface(this);
+            deleteQuietly(UI_ATTEMPT);
             layerState = 2;
         }
     }
 
-    @Override
-    protected void onResume() {
-        super.onResume();
-        resumed = true;
-    }
-
-    @Override
-    protected void onPause() {
-        resumed = false;
-        super.onPause();
-    }
-
-    /** Called by the native side after it draws its first UI frame. */
-    public static void uiShown() {
-        uiShown = true;
-    }
-
-    private void checkUiShown() {
-        if (uiShown || isFinishing() || isDestroyed()) {
-            return;
-        }
-        if (!resumed) {
-            // Not on screen yet (or anymore): no frame is expected; check again later.
-            handler.postDelayed(this::checkUiShown, UI_TIMEOUT_MS);
-            return;
-        }
-        Log.e(TAG, "the UI never appeared on the layered surface; switching this version to a single surface");
-        if (!writeMarker(SINGLE_SURFACE_MARKER)) {
-            return;
-        }
-        Toast.makeText(this, "Joshflix hit a display problem and switched to its classic mode. Open it again.", Toast.LENGTH_LONG).show();
-        // The native app can't start twice in one process: close it for good.
-        handler.postDelayed(() -> {
-            finishAndRemoveTask();
-            Process.killProcess(Process.myPid());
-        }, 3_000);
-    }
-
-    /** Called by the native side right before mpv attaches to the video surface. */
-    public static void layeredVideoStarting() {
-        writeMarker(ATTEMPT_MARKER);
-    }
-
-    /** Called by the native side once video showed, or mpv let go of the surface cleanly. */
-    public static void layeredVideoWorked() {
-        File dir = filesDir;
-        if (dir != null) {
-            deleteQuietly(new File(dir, ATTEMPT_MARKER));
-        }
-    }
-
-    /** Called by the native side when video never appeared on its own surface. */
-    public static void layeringFailed() {
-        writeMarker(SINGLE_SURFACE_MARKER);
-        layeredVideoWorked();
-    }
-
-    private boolean layeringFailedBefore() {
-        File marker = new File(filesDir, SINGLE_SURFACE_MARKER);
-        if (!marker.isFile()) {
+    /** Whether this launch layers surfaces, after counting attempts that died last time. */
+    private boolean decideLayering() {
+        if (new File(filesDir, SINGLE_SURFACE_USER).exists()) {
+            Log.i(TAG, "layered surfaces turned off in Settings");
             return false;
         }
-        if (markerMatchesVersion(marker)) {
+        countStrike(UI_ATTEMPT, UI_STRIKES, "before the UI's first frame");
+        countStrike(VIDEO_ATTEMPT, VIDEO_STRIKES, "while starting video on its own surface");
+        File marker = new File(filesDir, SINGLE_SURFACE);
+        if (!marker.isFile()) {
             return true;
+        }
+        if (Long.toString(appVersionCode).equals(readMarker(SINGLE_SURFACE))) {
+            Log.w(TAG, "layered surfaces failed in this version before; using a single surface");
+            return false;
         }
         // A new version gets to try again.
-        deleteQuietly(marker);
-        return false;
+        deleteQuietly(SINGLE_SURFACE);
+        return true;
     }
 
-    /** Write the app's version code to a marker file. */
-    private static boolean writeMarker(String name) {
-        File dir = filesDir;
-        if (dir == null) {
-            return false;
+    /** A leftover attempt marker means the process died during that attempt. */
+    private static void countStrike(String attempt, String strikes, String when) {
+        String version = Long.toString(appVersionCode);
+        if (version.equals(readMarker(attempt))) {
+            int count = 1;
+            String[] previous = String.valueOf(readMarker(strikes)).split(" ");
+            if (previous.length == 2 && previous[0].equals(version)) {
+                try {
+                    count += Integer.parseInt(previous[1]);
+                } catch (NumberFormatException ignored) {
+                    // Start counting again.
+                }
+            }
+            Log.e(TAG, "the app died " + when + " (" + count + " of " + MAX_STRIKES + ")");
+            writeFile(strikes, version + " " + count);
+            if (count >= MAX_STRIKES) {
+                writeMarker(SINGLE_SURFACE);
+            }
         }
-        try (FileOutputStream out = new FileOutputStream(new File(dir, name))) {
-            out.write(String.valueOf(appVersionCode).getBytes(StandardCharsets.UTF_8));
-            out.getFD().sync();
-            return true;
-        } catch (Exception e) {
-            Log.e(TAG, "couldn't write " + name, e);
-            return false;
-        }
-    }
-
-    private static boolean markerMatchesVersion(File marker) {
-        try {
-            String version = new String(Files.readAllBytes(marker.toPath()), StandardCharsets.UTF_8).trim();
-            return version.equals(String.valueOf(appVersionCode));
-        } catch (Exception e) {
-            Log.w(TAG, "couldn't read " + marker.getName(), e);
-            return false;
-        }
-    }
-
-    private static void deleteQuietly(File file) {
-        if (file.exists() && !file.delete()) {
-            Log.w(TAG, "couldn't delete " + file.getName());
-        }
-    }
-
-    @SuppressWarnings("deprecation")
-    private long versionCode() {
-        try {
-            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
-            return Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
-        } catch (PackageManager.NameNotFoundException e) {
-            return -1;
-        }
+        deleteQuietly(attempt);
     }
 
     private static FrameLayout.LayoutParams matchParent() {
@@ -243,6 +183,9 @@ public class MainActivity extends NativeActivity {
             @Override
             public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
                 synchronized (MainActivity.class) {
+                    if (!follows(view)) {
+                        return;
+                    }
                     videoSurface = holder.getSurface();
                     videoWidth = width;
                     videoHeight = height;
@@ -257,6 +200,9 @@ public class MainActivity extends NativeActivity {
                 // The native side detaches mpv before this returns: the surface
                 // must not be drawn to afterwards.
                 synchronized (MainActivity.class) {
+                    if (!follows(view)) {
+                        return;
+                    }
                     videoSurface = null;
                     if (listening) {
                         nativeVideoSurface(null, 0, 0);
@@ -265,6 +211,23 @@ public class MainActivity extends NativeActivity {
             }
         });
         return view;
+    }
+
+    /** Only the current activity's current video view reports to the native side. */
+    private boolean follows(SurfaceView view) {
+        return current == this && view == videoView;
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        resumed = true;
+    }
+
+    @Override
+    protected void onPause() {
+        resumed = false;
+        super.onPause();
     }
 
     /** Called by the native side: 0 while onCreate runs, then 1 (layered) or 2 (single surface). */
@@ -285,6 +248,57 @@ public class MainActivity extends NativeActivity {
         }
     }
 
+    /** Called by the native side after it draws its first UI frame. */
+    public static void uiShown() {
+        uiShown = true;
+        deleteQuietly(UI_ATTEMPT);
+        deleteQuietly(UI_STRIKES);
+    }
+
+    /** Called by the native side right before mpv attaches to the video surface. */
+    public static void layeredVideoStarting() {
+        writeMarker(VIDEO_ATTEMPT);
+    }
+
+    /** Called by the native side when mpv let go of the video surface cleanly. */
+    public static void layeredVideoWorked() {
+        deleteQuietly(VIDEO_ATTEMPT);
+    }
+
+    /** Called by the native side once video has played on its own surface for a while. */
+    public static void layeredVideoConfirmed() {
+        deleteQuietly(VIDEO_ATTEMPT);
+        deleteQuietly(VIDEO_STRIKES);
+    }
+
+    /** Called by the native side when video never appeared on its own surface. */
+    public static void layeringFailed() {
+        writeMarker(SINGLE_SURFACE);
+        deleteQuietly(VIDEO_ATTEMPT);
+    }
+
+    private void checkUiShown() {
+        if (uiShown || isFinishing() || isDestroyed()) {
+            return;
+        }
+        if (!resumed) {
+            // Not on screen yet (or anymore): no frame is expected; check again later.
+            handler.postDelayed(this::checkUiShown, UI_TIMEOUT_MS);
+            return;
+        }
+        Log.e(TAG, "the UI never appeared on the layered surface; switching this version to a single surface");
+        if (!writeMarker(SINGLE_SURFACE)) {
+            return;
+        }
+        deleteQuietly(UI_ATTEMPT);
+        Toast.makeText(this, "Joshflix hit a display problem and switched to its classic mode. Open it again.", Toast.LENGTH_LONG).show();
+        // The native app can't start twice in one process: close it for good.
+        handler.postDelayed(() -> {
+            finishAndRemoveTask();
+            Process.killProcess(Process.myPid());
+        }, 3_000);
+    }
+
     /**
      * Replace the video surface with a new one. Used when an mpv instance is
      * abandoned while it still holds the old surface.
@@ -294,10 +308,69 @@ public class MainActivity extends NativeActivity {
             if (layers == null || videoView == null) {
                 return;
             }
-            layers.removeView(videoView);
+            SurfaceView old = videoView;
+            // The old view's destroy callback is ignored from now on: the
+            // native side has already given up that surface.
             videoView = newVideoView();
+            layers.removeView(old);
             layers.addView(videoView, 0, matchParent());
         });
+    }
+
+    /** Write the app's version code to a marker file. */
+    private static boolean writeMarker(String name) {
+        return writeFile(name, Long.toString(appVersionCode));
+    }
+
+    private static boolean writeFile(String name, String text) {
+        File dir = filesDir;
+        if (dir == null) {
+            return false;
+        }
+        try (FileOutputStream out = new FileOutputStream(new File(dir, name))) {
+            out.write(text.getBytes(StandardCharsets.UTF_8));
+            out.getFD().sync();
+            return true;
+        } catch (Exception e) {
+            Log.e(TAG, "couldn't write " + name, e);
+            return false;
+        }
+    }
+
+    /** The marker's text, or null when it doesn't exist or can't be read. */
+    private static String readMarker(String name) {
+        File dir = filesDir;
+        File file = dir == null ? null : new File(dir, name);
+        if (file == null || !file.isFile()) {
+            return null;
+        }
+        try {
+            return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8).trim();
+        } catch (Exception e) {
+            Log.w(TAG, "couldn't read " + name, e);
+            return null;
+        }
+    }
+
+    private static void deleteQuietly(String name) {
+        File dir = filesDir;
+        if (dir == null) {
+            return;
+        }
+        File file = new File(dir, name);
+        if (file.exists() && !file.delete()) {
+            Log.w(TAG, "couldn't delete " + name);
+        }
+    }
+
+    @SuppressWarnings("deprecation")
+    private long versionCode() {
+        try {
+            PackageInfo info = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return Build.VERSION.SDK_INT >= 28 ? info.getLongVersionCode() : info.versionCode;
+        } catch (PackageManager.NameNotFoundException e) {
+            return -1;
+        }
     }
 
     /** {@code surface} is null when the video surface is gone. Registered by the native side. */

@@ -26,6 +26,8 @@ const DECODE_TIMEOUT: Duration = Duration::from_secs(40);
 /// How long playback may run without picture on mpv's own surface before the
 /// app switches to drawing video into the UI.
 const NO_PICTURE_TIMEOUT: Duration = Duration::from_secs(8);
+/// How long video must show on mpv's own surface before that counts as working.
+const PICTURE_CONFIRM: Duration = Duration::from_secs(3);
 /// How often the TV log gets a dropped-frames line during playback.
 const DROPS_LOG_EVERY: Duration = Duration::from_secs(10);
 
@@ -92,10 +94,14 @@ pub struct PlayerCtl {
     overlay_shown: Option<bool>,
     /// Audio Normalization is on.
     normalize: bool,
-    /// mpv's video output is showing video.
-    video_out: bool,
-    /// Since when playback has run without picture (own-surface mode).
+    /// Decoded frame width, and the width mpv's video output is set up for
+    /// (0 when none). Equal and nonzero means the output shows this video:
+    /// with force-window or vo=null the output can have a dummy size.
+    video_width: i64,
+    video_out_width: i64,
+    /// Own-surface mode: since when playback has run without picture, or with it.
     no_picture_since: Option<Instant>,
+    picture_since: Option<Instant>,
     /// Frames dropped so far by the video output and the decoder, and the
     /// totals at the last log line.
     drops: (i64, i64),
@@ -127,6 +133,7 @@ impl Controller {
         let _ = player.set_subtitle_scale(f64::from(self.settings.subtitle_scale));
         crate::video::want_video(true);
         if let Err(e) = player.load(&url, request.resume_at) {
+            crate::video::want_video(self.screen == Screen::Player);
             self.toast(&e.to_string());
             return;
         }
@@ -170,8 +177,10 @@ impl Controller {
             opened_at: Instant::now(),
             open_timed_out: false,
             last_mpv_error: None,
-            video_out: false,
+            video_width: 0,
+            video_out_width: 0,
             no_picture_since: None,
+            picture_since: None,
             drops: (0, 0),
             drops_logged: (0, 0),
             drops_logged_at: Instant::now(),
@@ -296,11 +305,12 @@ impl Controller {
                 p.drops.1 = n;
                 return;
             }
-            PlayerEvent::VideoOutput(shown) => {
-                p.video_out = shown;
-                if shown && let Some(player) = self.video.player() {
-                    crate::video::video_shown(&player);
-                }
+            PlayerEvent::VideoOutputWidth(width) => {
+                p.video_out_width = width;
+                return;
+            }
+            PlayerEvent::VideoSize { width, .. } if width > 0 => {
+                p.video_width = width;
                 return;
             }
             PlayerEvent::Paused(paused) => {
@@ -512,18 +522,31 @@ impl Controller {
         if crate::video::surface_mode() {
             let player = self.video.player();
             let has_video = player.as_ref().is_some_and(|pl| pl.tracks().iter().any(|t| t.kind == TrackKind::Video));
-            // mpv's null output also "shows" video while it has no surface.
-            let picture = p.video_out && player.as_ref().is_some_and(crate::video::shows_on_own_surface);
+            // The output shows this file's frames (not a dummy size), on the surface.
+            let picture = p.video_out_width > 0
+                && p.video_out_width == p.video_width
+                && player.as_ref().is_some_and(crate::video::shows_on_own_surface);
             let playing = p.started && !p.paused && p.buffering.is_none() && p.error.is_none();
             if playing && has_video && !picture {
+                p.picture_since = None;
                 let since = *p.no_picture_since.get_or_insert_with(Instant::now);
                 if since.elapsed() > NO_PICTURE_TIMEOUT {
-                    tracing::warn!("no picture {NO_PICTURE_TIMEOUT:?} into playback on mpv's own surface");
+                    tracing::warn!(
+                        "no picture {NO_PICTURE_TIMEOUT:?} into playback on mpv's own surface (output width {}, video width {})",
+                        p.video_out_width,
+                        p.video_width
+                    );
                     self.recover_with_embedded_video();
                     return;
                 }
             } else {
                 p.no_picture_since = None;
+            }
+            if playing && picture {
+                let since = *p.picture_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > PICTURE_CONFIRM {
+                    crate::video::confirm_own_surface();
+                }
             }
         }
         if p.drops_logged_at.elapsed() >= DROPS_LOG_EVERY {
@@ -686,7 +709,6 @@ impl Controller {
 
     fn exit_player(&mut self) {
         self.stop_playback(true);
-        crate::video::want_video(false);
         self.pop_screen();
     }
 
