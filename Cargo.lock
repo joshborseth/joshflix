@@ -2565,6 +2565,7 @@ dependencies = [
  "joshflix-core",
  "joshflix-player",
  "joshflix-protocol",
+ "libc",
  "libloading 0.9.0",
  "log",
  "ndk",

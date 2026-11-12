@@ -1,6 +1,7 @@
 import { Theme, Icons } from "theme.slint";
 import { TrackItem, DetailButton } from "types.slint";
 import { Spinner, OptionList, PillButton } from "components.slint";
+import { PillGlow } from "glow.slint";
 
 component ControlButton inherits Rectangle {
     in property <image> icon;
@@ -9,13 +10,19 @@ component ControlButton inherits Rectangle {
     in property <bool> active;
     width: 40px;
     height: 40px;
-    border-radius: 20px;
-    background: focused ? Theme.accent : (active ? Theme.accent-soft : #ffffff14);
-    drop-shadow-blur: focused ? 14px : 0px;
-    drop-shadow-color: Theme.glow;
     transform-scale: focused ? 1.1 : 1.0;
     transform-origin: { x: self.width / 2, y: self.height / 2 };
-    animate background, transform-scale { duration: Theme.fast; }
+    animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+    PillGlow {
+        width: parent.width;
+        height: parent.height;
+        on: root.focused;
+    }
+    Rectangle {
+        border-radius: 20px;
+        background: root.focused ? Theme.accent : (root.active ? Theme.accent-soft : #ffffff14);
+        animate background { duration: Theme.fast; }
+    }
     Image {
         width: 18px;
         height: 18px;
@@ -197,13 +204,16 @@ export component PlayerOverlay inherits Rectangle {
                 property <float> at: root.seeking ? root.seek-progress : root.progress;
                 x: parent.width * clamp(self.at, 0, 1) - self.width / 2;
                 y: (parent.height - self.height) / 2;
-                width: root.zone == 0 ? 18px : 0px;
+                width: 18px;
                 height: self.width;
                 border-radius: self.width / 2;
                 background: white;
                 drop-shadow-blur: 10px;
                 drop-shadow-color: Theme.glow;
-                animate width { duration: Theme.fast; }
+                // Grow by scaling: a changing size would re-blur the shadow every frame.
+                transform-scale: root.zone == 0 ? 1 : 0;
+                transform-origin: { x: self.width / 2, y: self.height / 2 };
+                animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
             }
         }
 

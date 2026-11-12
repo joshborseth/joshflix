@@ -99,8 +99,10 @@ impl Platform for Desktop {
 pub mod android {
     //! Android TV implementation over JNI and the NDK.
 
+    use std::cell::Cell;
     use std::ffi::c_void;
     use std::path::{Path, PathBuf};
+    use std::rc::Rc;
 
     use jni::JavaVM;
     use jni::objects::{JObject, JValue};
@@ -113,13 +115,18 @@ pub mod android {
         app: AndroidApp,
         vm: JavaVM,
         caps: DisplayCaps,
+        /// Bumped by every frame-rate change, so a pending UI request can tell it's stale.
+        frame_rate_generation: Rc<Cell<u64>>,
     }
+
+    /// How long the display gets to switch back from a video's mode before the UI asks for its own.
+    const UI_RATE_DELAY: std::time::Duration = std::time::Duration::from_secs(3);
 
     impl Android {
         pub fn new(app: AndroidApp) -> Self {
             // SAFETY: android-activity hands us valid JavaVM and Activity pointers for the process lifetime.
             let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.expect("JavaVM");
-            let mut android = Self { app, vm, caps: DisplayCaps::SDR_1080 };
+            let mut android = Self { app, vm, caps: DisplayCaps::SDR_1080, frame_rate_generation: Rc::default() };
             android.caps = android.query_caps().unwrap_or_else(|e| {
                 tracing::warn!("display caps: {e}");
                 DisplayCaps::SDR_1080
@@ -275,6 +282,74 @@ pub mod android {
         })
     }
 
+    /// The fastest refresh rate the display offers at its current resolution.
+    fn max_refresh_rate(app: &AndroidApp) -> Result<(f32, f32), jni::errors::Error> {
+        // SAFETY: android-activity hands us valid JavaVM and Activity pointers for the process lifetime.
+        let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }?;
+        let mut env = vm.attach_current_thread()?;
+        let activity = unsafe { JObject::from_raw(app.activity_as_ptr().cast()) };
+        let result = (|| {
+            let wm = env.call_method(&activity, "getWindowManager", "()Landroid/view/WindowManager;", &[])?.l()?;
+            let display = env.call_method(&wm, "getDefaultDisplay", "()Landroid/view/Display;", &[])?.l()?;
+            let size = |env: &mut jni::JNIEnv, mode: &JObject| -> Result<(i32, i32, f32), jni::errors::Error> {
+                Ok((
+                    env.call_method(mode, "getPhysicalWidth", "()I", &[])?.i()?,
+                    env.call_method(mode, "getPhysicalHeight", "()I", &[])?.i()?,
+                    env.call_method(mode, "getRefreshRate", "()F", &[])?.f()?,
+                ))
+            };
+            let current = env.call_method(&display, "getMode", "()Landroid/view/Display$Mode;", &[])?.l()?;
+            let (width, height, current_rate) = size(&mut env, &current)?;
+            let modes = env.call_method(&display, "getSupportedModes", "()[Landroid/view/Display$Mode;", &[])?.l()?;
+            let modes = jni::objects::JObjectArray::from(modes);
+            let mut best = current_rate;
+            for i in 0..env.get_array_length(&modes)? {
+                let mode = env.get_object_array_element(&modes, i)?;
+                let (w, h, rate) = size(&mut env, &mode)?;
+                if (w, h) == (width, height) {
+                    best = best.max(rate);
+                }
+            }
+            Ok((current_rate, best))
+        })();
+        if result.is_err() {
+            let _ = env.exception_clear();
+        }
+        result
+    }
+
+    /// Ask for the display's fastest refresh rate while showing the UI, so
+    /// animations get more frames on 90/120 Hz screens. Only seamless switches
+    /// are allowed: a TV that would blank its screen to change mode stays put.
+    pub fn request_ui_refresh_rate(app: &AndroidApp) {
+        let Some(window) = app.native_window() else { return };
+        let (current, best) = match max_refresh_rate(app) {
+            Ok(rates) => rates,
+            Err(e) => {
+                tracing::warn!("display modes: {e}");
+                return;
+            }
+        };
+        type WithStrategy = unsafe extern "C" fn(*mut c_void, f32, i8, i8) -> i32;
+        type Simple = unsafe extern "C" fn(*mut c_void, f32, i8) -> i32;
+        // ANATIVEWINDOW_FRAME_RATE_COMPATIBILITY_DEFAULT = 0, CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS = 0.
+        // A vote of 0 Hz when nothing faster exists clears any earlier video vote.
+        let rate = if best > current + 1.0 { best } else { 0.0 };
+        // Looked up at runtime: Android < 11 has neither, and keeps its mode.
+        // SAFETY: libandroid is always present; symbol types match the NDK headers.
+        unsafe {
+            let Ok(lib) = libloading::Library::new("libandroid.so") else { return };
+            let code = if let Ok(f) = lib.get::<WithStrategy>(b"ANativeWindow_setFrameRateWithChangeStrategy\0") {
+                f(window.ptr().as_ptr().cast(), rate, 0, 0)
+            } else if let Ok(f) = lib.get::<Simple>(b"ANativeWindow_setFrameRate\0") {
+                // Android 11 only switches seamlessly here anyway.
+                f(window.ptr().as_ptr().cast(), rate, 0)
+            } else {
+                return;
+            };
+            tracing::info!("UI refresh rate: display at {current:.1} Hz, fastest {best:.1} Hz, asked for {rate:.1} ({code})");
+        }
+    }
 
     impl Platform for Android {
         fn data_dir(&self) -> PathBuf {
@@ -293,6 +368,18 @@ pub mod android {
         }
 
         fn set_frame_rate(&self, fps: f64) {
+            let generation = self.frame_rate_generation.get() + 1;
+            self.frame_rate_generation.set(generation);
+            if fps <= 0.0 {
+                // Clearing the video's vote lets the display return to its usual
+                // mode. Once it has, ask for the UI's fastest seamless rate.
+                let (app, current) = (self.app.clone(), self.frame_rate_generation.clone());
+                slint::Timer::single_shot(UI_RATE_DELAY, move || {
+                    if current.get() == generation {
+                        request_ui_refresh_rate(&app);
+                    }
+                });
+            }
             let Some(window) = self.app.native_window() else { return };
             type WithStrategy = unsafe extern "C" fn(*mut c_void, f32, i8, i8) -> i32;
             type Simple = unsafe extern "C" fn(*mut c_void, f32, i8) -> i32;

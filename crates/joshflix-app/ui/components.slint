@@ -1,5 +1,6 @@
 import { Theme, Icons } from "theme.slint";
 import { Poster, Row, KeyCap, TrackItem } from "types.slint";
+import { CardGlow, PillGlow } from "glow.slint";
 
 // Poster artwork with a fallback tile, focus glow and progress bar.
 export component PosterCard inherits Rectangle {
@@ -9,70 +10,78 @@ export component PosterCard inherits Rectangle {
     width: Theme.poster-w;
     height: Theme.poster-h + (show-title ? 30px : 0px);
 
-    art := Rectangle {
+    // Focus lift: scales the glow and the artwork together.
+    Rectangle {
         x: 0;
         y: 0;
         width: parent.width;
         height: Theme.poster-h;
-        border-radius: Theme.radius;
-        background: Theme.surface-2;
-        clip: true;
         transform-scale: root.focused ? Theme.focus-scale : 1.0;
         transform-origin: { x: self.width / 2, y: self.height / 2 };
-        drop-shadow-blur: root.focused ? 18px : 0px;
-        drop-shadow-color: Theme.glow;
-        animate transform-scale, drop-shadow-blur { duration: Theme.fast; easing: ease-out-quart; }
+        animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 
-        if !root.item.has-image: Rectangle {
-            background: @linear-gradient(160deg, Theme.surface-3 0%, Theme.surface 100%);
-            Text {
-                x: 8px;
-                width: parent.width - 16px;
-                text: root.item.title;
-                color: Theme.text-muted;
-                font-size: Theme.text-md;
-                font-weight: 600;
-                wrap: word-wrap;
-                horizontal-alignment: center;
-                vertical-alignment: center;
-            }
-        }
-        Image {
+        CardGlow {
             width: parent.width;
             height: parent.height;
-            source: root.item.image;
-            image-fit: cover;
-            opacity: root.item.has-image ? 1 : 0;
-            animate opacity { duration: Theme.med; }
+            on: root.focused;
         }
-        if root.item.progress > 0: Rectangle {
-            y: parent.height - 4px;
-            height: 4px;
-            background: #00000099;
-            Rectangle {
-                x: 0;
-                width: parent.width * clamp(root.item.progress, 0, 1);
-                background: Theme.accent;
-            }
-        }
-        if root.item.badge != "": Rectangle {
-            x: 6px;
-            y: 6px;
-            width: badge-text.preferred-width + 10px;
-            height: 16px;
-            border-radius: 4px;
-            background: Theme.accent;
-            badge-text := Text {
-                text: root.item.badge;
-                font-size: Theme.text-xs;
-                font-weight: 700;
-                color: white;
-            }
-        }
-        Rectangle {
+
+        art := Rectangle {
             border-radius: Theme.radius;
-            border-width: root.focused ? 2px : 0px;
-            border-color: Theme.accent-light;
+            background: Theme.surface-2;
+            clip: true;
+
+            if !root.item.has-image: Rectangle {
+                background: @linear-gradient(160deg, Theme.surface-3 0%, Theme.surface 100%);
+                Text {
+                    x: 8px;
+                    width: parent.width - 16px;
+                    text: root.item.title;
+                    color: Theme.text-muted;
+                    font-size: Theme.text-md;
+                    font-weight: 600;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.item.image;
+                image-fit: cover;
+                opacity: root.item.has-image ? 1 : 0;
+                animate opacity { duration: Theme.med; }
+            }
+            if root.item.progress > 0: Rectangle {
+                y: parent.height - 4px;
+                height: 4px;
+                background: #00000099;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(root.item.progress, 0, 1);
+                    background: Theme.accent;
+                }
+            }
+            if root.item.badge != "": Rectangle {
+                x: 6px;
+                y: 6px;
+                width: badge-text.preferred-width + 10px;
+                height: 16px;
+                border-radius: 4px;
+                background: Theme.accent;
+                badge-text := Text {
+                    text: root.item.badge;
+                    font-size: Theme.text-xs;
+                    font-weight: 700;
+                    color: white;
+                }
+            }
+            Rectangle {
+                border-radius: Theme.radius;
+                border-width: root.focused ? 2px : 0px;
+                border-color: Theme.accent-light;
+            }
         }
     }
 
@@ -94,69 +103,77 @@ export component WideCard inherits Rectangle {
     width: Theme.wide-w;
     height: Theme.wide-h + 34px;
 
-    art := Rectangle {
+    // Focus lift: scales the glow and the artwork together.
+    Rectangle {
         x: 0;
         y: 0;
         width: parent.width;
         height: Theme.wide-h;
-        border-radius: Theme.radius;
-        background: Theme.surface-2;
-        clip: true;
         transform-scale: root.focused ? Theme.focus-scale : 1.0;
         transform-origin: { x: self.width / 2, y: self.height / 2 };
-        drop-shadow-blur: root.focused ? 18px : 0px;
-        drop-shadow-color: Theme.glow;
-        animate transform-scale, drop-shadow-blur { duration: Theme.fast; easing: ease-out-quart; }
+        animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 
-        Image {
+        CardGlow {
             width: parent.width;
             height: parent.height;
-            source: root.item.image;
-            image-fit: cover;
-            opacity: root.item.has-image ? 1 : 0;
-            animate opacity { duration: Theme.med; }
+            on: root.focused;
         }
-        Rectangle {
-            background: @linear-gradient(180deg, #00000000 45%, #000000cc 100%);
-        }
-        Text {
-            x: 10px;
-            y: parent.height - 30px;
-            width: parent.width - 20px;
-            text: root.item.title;
-            color: Theme.text;
-            font-size: Theme.text-md;
-            font-weight: 700;
-            overflow: elide;
-        }
-        if root.item.badge != "": Rectangle {
-            x: 8px;
-            y: 8px;
-            width: wide-badge.preferred-width + 10px;
-            height: 16px;
-            border-radius: 4px;
-            background: Theme.accent;
-            wide-badge := Text {
-                text: root.item.badge;
-                font-size: Theme.text-xs;
-                font-weight: 700;
-                color: white;
-            }
-        }
-        Rectangle {
-            y: parent.height - 4px;
-            height: 4px;
-            background: root.item.progress > 0 ? #ffffff33 : transparent;
-            Rectangle {
-                x: 0;
-                width: parent.width * clamp(root.item.progress, 0, 1);
-                background: Theme.accent;
-            }
-        }
-        Rectangle {
+
+        art := Rectangle {
             border-radius: Theme.radius;
-            border-width: root.focused ? 2px : 0px;
-            border-color: Theme.accent-light;
+            background: Theme.surface-2;
+            clip: true;
+
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.item.image;
+                image-fit: cover;
+                opacity: root.item.has-image ? 1 : 0;
+                animate opacity { duration: Theme.med; }
+            }
+            Rectangle {
+                background: @linear-gradient(180deg, #00000000 45%, #000000cc 100%);
+            }
+            Text {
+                x: 10px;
+                y: parent.height - 30px;
+                width: parent.width - 20px;
+                text: root.item.title;
+                color: Theme.text;
+                font-size: Theme.text-md;
+                font-weight: 700;
+                overflow: elide;
+            }
+            if root.item.badge != "": Rectangle {
+                x: 8px;
+                y: 8px;
+                width: wide-badge.preferred-width + 10px;
+                height: 16px;
+                border-radius: 4px;
+                background: Theme.accent;
+                wide-badge := Text {
+                    text: root.item.badge;
+                    font-size: Theme.text-xs;
+                    font-weight: 700;
+                    color: white;
+                }
+            }
+            Rectangle {
+                y: parent.height - 4px;
+                height: 4px;
+                background: root.item.progress > 0 ? #ffffff33 : transparent;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * clamp(root.item.progress, 0, 1);
+                    background: Theme.accent;
+                }
+            }
+            Rectangle {
+                border-radius: Theme.radius;
+                border-width: root.focused ? 2px : 0px;
+                border-color: Theme.accent-light;
+            }
         }
     }
     Text {
@@ -243,15 +260,22 @@ export component PillButton inherits Rectangle {
     in property <bool> compact: false;
     height: compact ? 30px : 36px;
     width: content.preferred-width + (compact ? 24px : 32px);
-    border-radius: self.height / 2;
-    background: focused ? Theme.accent : (primary ? Theme.surface-3 : Theme.surface-2);
-    border-width: focused ? 0px : 1px;
-    border-color: Theme.border;
-    drop-shadow-blur: focused ? 16px : 0px;
-    drop-shadow-color: Theme.glow;
     transform-scale: focused ? 1.05 : 1.0;
     transform-origin: { x: self.width / 2, y: self.height / 2 };
-    animate background, drop-shadow-blur, transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+    animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+
+    PillGlow {
+        width: parent.width;
+        height: parent.height;
+        on: root.focused;
+    }
+    Rectangle {
+        border-radius: self.height / 2;
+        background: root.focused ? Theme.accent : (root.primary ? Theme.surface-3 : Theme.surface-2);
+        border-width: root.focused ? 0px : 1px;
+        border-color: Theme.border;
+        animate background { duration: Theme.fast; easing: ease-out-quart; }
+    }
 
     content := HorizontalLayout {
         alignment: center;

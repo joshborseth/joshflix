@@ -1,6 +1,7 @@
 import { Theme, Icons } from "theme.slint";
 import { EpisodeCard, DetailButton } from "types.slint";
 import { PillButton, Chip, Spinner, ProgressBar } from "components.slint";
+import { CardGlow } from "glow.slint";
 import { Backdrop } from "browse.slint";
 
 component EpisodeTile inherits Rectangle {
@@ -9,62 +10,70 @@ component EpisodeTile inherits Rectangle {
     width: 172px;
     height: 97px + 44px;
 
-    thumb := Rectangle {
+    // Focus lift: scales the glow and the thumbnail together.
+    Rectangle {
         x: 0;
         y: 0;
         width: parent.width;
         height: 97px;
-        border-radius: Theme.radius;
-        background: Theme.surface-2;
-        clip: true;
         transform-scale: root.focused ? Theme.focus-scale : 1.0;
         transform-origin: { x: self.width / 2, y: self.height / 2 };
-        drop-shadow-blur: root.focused ? 16px : 0px;
-        drop-shadow-color: Theme.glow;
-        animate transform-scale, drop-shadow-blur { duration: Theme.fast; easing: ease-out-quart; }
+        animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 
-        if !root.episode.has-thumb: Text {
-            text: root.episode.label;
-            color: Theme.text-faint;
-            font-size: Theme.text-2xl;
-            font-weight: 900;
-        }
-        Image {
+        CardGlow {
             width: parent.width;
             height: parent.height;
-            source: root.episode.thumb;
-            image-fit: cover;
-            opacity: root.episode.has-thumb ? (root.episode.upcoming ? 0.35 : 1) : 0;
-            animate opacity { duration: Theme.med; }
+            on: root.focused;
         }
-        if root.episode.watched: Rectangle {
-            x: parent.width - 24px;
-            y: 6px;
-            width: 18px;
-            height: 18px;
-            border-radius: 9px;
-            background: Theme.accent;
-            Image {
-                width: 11px;
-                height: 11px;
-                source: Icons.check;
-                colorize: white;
-            }
-        }
-        if root.episode.progress > 0 && !root.episode.watched: Rectangle {
-            y: parent.height - 4px;
-            height: 4px;
-            background: #00000099;
-            Rectangle {
-                x: 0;
-                width: parent.width * root.episode.progress;
-                background: Theme.accent;
-            }
-        }
-        Rectangle {
+
+        thumb := Rectangle {
             border-radius: Theme.radius;
-            border-width: root.focused ? 2px : 0px;
-            border-color: Theme.accent-light;
+            background: Theme.surface-2;
+            clip: true;
+
+            if !root.episode.has-thumb: Text {
+                text: root.episode.label;
+                color: Theme.text-faint;
+                font-size: Theme.text-2xl;
+                font-weight: 900;
+            }
+            Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.episode.thumb;
+                image-fit: cover;
+                opacity: root.episode.has-thumb ? (root.episode.upcoming ? 0.35 : 1) : 0;
+                animate opacity { duration: Theme.med; }
+            }
+            if root.episode.watched: Rectangle {
+                x: parent.width - 24px;
+                y: 6px;
+                width: 18px;
+                height: 18px;
+                border-radius: 9px;
+                background: Theme.accent;
+                Image {
+                    width: 11px;
+                    height: 11px;
+                    source: Icons.check;
+                    colorize: white;
+                }
+            }
+            if root.episode.progress > 0 && !root.episode.watched: Rectangle {
+                y: parent.height - 4px;
+                height: 4px;
+                background: #00000099;
+                Rectangle {
+                    x: 0;
+                    width: parent.width * root.episode.progress;
+                    background: Theme.accent;
+                }
+            }
+            Rectangle {
+                border-radius: Theme.radius;
+                border-width: root.focused ? 2px : 0px;
+                border-color: Theme.accent-light;
+            }
         }
     }
     Text {

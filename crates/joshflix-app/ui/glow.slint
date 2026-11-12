@@ -1,0 +1,39 @@
+import { Theme } from "theme.slint";
+
+// Focus glows that fade without re-blurring.
+//
+// femtovg re-renders and blurs a fresh texture whenever a drop shadow's blur
+// changes, so `animate drop-shadow-blur` re-blurs every frame of a focus move.
+// These glows are pre-blurred images (glow/make_glow.py) drawn as nine-slice;
+// only their opacity animates, which is a handful of textured quads per frame.
+// Place one as the first child, the same size as the thing it lights up.
+
+// Rounded-rectangle glow for cards (Theme.radius corners, 18px blur).
+export component CardGlow {
+    in property <bool> on;
+    Image {
+        x: -27px;
+        y: -27px;
+        width: root.width + 54px;
+        height: root.height + 54px;
+        source: @image-url("glow/card.png", nine-slice(39));
+        colorize: Theme.glow;
+        opacity: root.on ? 1 : 0;
+        animate opacity { duration: Theme.fast; easing: ease-out-quart; }
+    }
+}
+
+// Pill and round-button glow (fully rounded ends, 14px blur).
+export component PillGlow {
+    in property <bool> on;
+    Image {
+        x: -21px;
+        y: -21px;
+        width: root.width + 42px;
+        height: root.height + 42px;
+        source: @image-url("glow/pill.png", nine-slice(0 41));
+        colorize: Theme.glow;
+        opacity: root.on ? 1 : 0;
+        animate opacity { duration: Theme.fast; easing: ease-out-quart; }
+    }
+}

@@ -6,6 +6,8 @@ slint::include_modules!();
 
 #[cfg(target_os = "android")]
 mod android_platform;
+#[cfg(target_os = "android")]
+mod vsync;
 mod app;
 mod format;
 mod keyboard;

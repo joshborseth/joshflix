@@ -16,6 +16,8 @@ use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use crate::vsync::{self, Vsync};
+
 use android_activity::input::{InputEvent, KeyAction, KeyEvent, Keycode};
 use android_activity::{AndroidApp, AndroidAppWaker, InputStatus, MainEvent, PollEvent};
 use glutin::config::{ConfigTemplateBuilder, GlConfig};
@@ -171,7 +173,20 @@ pub struct TvPlatform {
     direct_key: Box<dyn Fn(&str) -> bool>,
     /// Called when the activity pauses or resumes.
     lifecycle: Box<dyn Fn(bool)>,
+    /// Display vsync, when the Choreographer is available.
+    vsync: Option<Vsync>,
+    /// `CLOCK_MONOTONIC` ns at startup: Slint's time zero.
+    start_ns: i64,
+    /// The vsync time animations step to this iteration (None: use the real clock).
+    frame_ns: Cell<Option<i64>>,
+    /// Last time handed to Slint, which requires a monotonic clock.
+    clock_floor: Cell<Duration>,
 }
+
+/// A vsync older than this means frames weren't flowing; use the real clock.
+const STALE_VSYNC_NS: i64 = 50_000_000;
+/// Render anyway if the display stops reporting vsync while frames are wanted.
+const VSYNC_TIMEOUT: Duration = Duration::from_millis(100);
 
 impl TvPlatform {
     pub fn new(app: AndroidApp, direct_key: Box<dyn Fn(&str) -> bool>, lifecycle: Box<dyn Fn(bool)>) -> Result<Self, PlatformError> {
@@ -182,6 +197,10 @@ impl TvPlatform {
             needs_redraw: Cell::new(true),
             has_surface: Cell::new(false),
         });
+        let vsync = Vsync::start(app.create_waker());
+        if vsync.is_none() {
+            tracing::info!("frame pacing: swap interval only (no Choreographer)");
+        }
         Ok(Self {
             app,
             window,
@@ -189,6 +208,10 @@ impl TvPlatform {
             quit: Arc::default(),
             direct_key,
             lifecycle,
+            vsync,
+            start_ns: vsync::monotonic_ns(),
+            frame_ns: Cell::new(None),
+            clock_floor: Cell::new(Duration::ZERO),
         })
     }
 
@@ -207,6 +230,7 @@ impl TvPlatform {
                 }
                 self.window.has_surface.set(true);
                 self.resize();
+                crate::platform::android::request_ui_refresh_rate(&self.app);
             }
             Err(e) => tracing::error!("EGL setup failed: {e}"),
         }
@@ -350,14 +374,52 @@ impl Platform for TvPlatform {
         }))
     }
 
+    fn duration_since_start(&self) -> Duration {
+        let ns = self.frame_ns.get().unwrap_or_else(vsync::monotonic_ns);
+        let now = Duration::from_nanos(u64::try_from(ns - self.start_ns).unwrap_or(0));
+        let now = now.max(self.clock_floor.get());
+        self.clock_floor.set(now);
+        now
+    }
+
     fn run_event_loop(&self) -> Result<(), PlatformError> {
+        let mut rendered_seq = 0u64;
+        let mut last_render_ns = 0i64;
         loop {
+            // While frames are flowing, animate to the latest vsync so every
+            // frame advances by exactly one refresh, whenever the loop runs.
+            let (seq, vsync_ns) = self.vsync.as_ref().map_or((0, 0), Vsync::latest);
+            let now_ns = vsync::monotonic_ns();
+            let fresh = self.vsync.is_some() && vsync_ns > 0 && now_ns - vsync_ns < STALE_VSYNC_NS;
+            self.frame_ns.set(fresh.then_some(vsync_ns));
             slint::platform::update_timers_and_animations();
-            let animating = self.window.window.has_active_animations();
-            let timeout = if self.window.needs_redraw.get() || animating {
-                Some(Duration::ZERO)
-            } else {
+            self.frame_ns.set(None);
+
+            // Nothing to draw on while backgrounded: init_surface() asks for a redraw on return.
+            let wants_frame = self.window.has_surface.get()
+                && (self.window.needs_redraw.get() || self.window.window.has_active_animations());
+            if let Some(vsync) = &self.vsync {
+                vsync.set_wanted(wants_frame);
+            }
+            // One frame per vsync. A fresh request after idle renders at once.
+            let vsync_ready = self.vsync.is_none()
+                || seq != rendered_seq
+                || now_ns - last_render_ns > VSYNC_TIMEOUT.as_nanos() as i64;
+            if wants_frame && vsync_ready {
+                rendered_seq = seq;
+                last_render_ns = now_ns;
+                self.render();
+            }
+
+            let pending = self.window.has_surface.get()
+                && (self.window.needs_redraw.get() || self.window.window.has_active_animations());
+            let timeout = if !pending {
                 slint::platform::duration_until_next_timer_update().or(Some(Duration::from_millis(500)))
+            } else if self.vsync.is_some() {
+                // The vsync thread wakes the looper; the timeout is only a fallback.
+                Some(VSYNC_TIMEOUT)
+            } else {
+                Some(Duration::ZERO)
             };
 
             let mut destroy = false;
@@ -387,11 +449,11 @@ impl Platform for TvPlatform {
 
             self.drain_jobs();
             if destroy || self.quit.lock().map(|q| *q).unwrap_or(true) {
+                if let Some(vsync) = &self.vsync {
+                    vsync.set_wanted(false);
+                }
                 self.destroy_surface();
                 return Ok(());
-            }
-            if self.window.needs_redraw.get() || animating {
-                self.render();
             }
         }
     }
