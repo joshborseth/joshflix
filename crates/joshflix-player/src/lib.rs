@@ -122,6 +122,35 @@ impl Track {
     }
 }
 
+/// Tracks to read over their own connection to the same URL, by container
+/// track id (mpv's `src-id`). For MP4s that keep audio or captions in a block
+/// away from the video: one connection would jump between the blocks for
+/// nearly every packet.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SeparateTracks {
+    pub audio: Vec<i64>,
+    pub subtitles: Vec<i64>,
+}
+
+/// The current file, and which of its tracks have their own connection.
+#[derive(Default)]
+struct Split {
+    url: String,
+    wanted: SeparateTracks,
+    /// mpv track ids of the copies standing in for the wanted tracks: audio
+    /// from the connection opened for audio, subtitles from the one opened
+    /// for subtitles. mpv adds both types from each, so other copies are
+    /// hidden (and never selected). Empty until that connection is open.
+    /// `(mpv id, src-id)` pairs.
+    audio_copies: Vec<(i64, i64)>,
+    subtitle_copies: Vec<(i64, i64)>,
+    /// Connections already tried, successful or not.
+    audio_tried: bool,
+    subtitles_tried: bool,
+    /// mpv reported this file loaded, so tracks can be added to it.
+    loaded: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrackKind {
     Video,
@@ -207,6 +236,9 @@ impl Drop for Inner {
 /// the UI/render thread never waits on mpv's core (which can itself be waiting
 /// for the render thread to consume MediaCodec frames).
 enum Cmd {
+    Load { url: String, start: String },
+    FileLoaded,
+    Separate { url: String, tracks: SeparateTracks },
     Command(Vec<String>),
     SetString(String, String),
     SetFlag(String, bool),
@@ -301,9 +333,9 @@ impl Inner {
         (code >= 0).then_some(value != 0)
     }
 
-    fn read_tracks(&self) -> Vec<Track> {
+    fn read_tracks(&self, split: &Split) -> Vec<Track> {
         let count = self.get_i64("track-list/count").unwrap_or(0);
-        (0..count)
+        let tracks: Vec<(Track, bool, Option<i64>)> = (0..count)
             .filter_map(|i| {
                 let p = |field: &str| format!("track-list/{i}/{field}");
                 let kind = match self.get_string(&p("type"))?.as_str() {
@@ -330,23 +362,139 @@ impl Inner {
                     default: self.get_bool(&p("default")).unwrap_or(false),
                     forced: self.get_bool(&p("forced")).unwrap_or(false),
                 })
+                .map(|track| {
+                    let copy = track.external && self.get_string(&p("external-filename")).is_some_and(|f| f == split.url);
+                    let src_id = self.get_i64(&p("src-id"));
+                    (track, copy, src_id)
+                })
+            })
+            .collect();
+        tracks
+            .into_iter()
+            .filter_map(|(mut track, copy, src_id)| {
+                let copies = match track.kind {
+                    TrackKind::Audio => &split.audio_copies,
+                    TrackKind::Subtitle => &split.subtitle_copies,
+                    TrackKind::Video => return Some(track),
+                };
+                if copy {
+                    // Shown as the file's own track, which it stands in for.
+                    track.external = false;
+                    copies.iter().any(|(id, _)| *id == track.id).then_some(track)
+                } else {
+                    // The file's own track, unless a copy stands in for it.
+                    let replaced = !track.external && copies.iter().any(|(_, src)| Some(*src) == src_id);
+                    (!replaced).then_some(track)
+                }
             })
             .collect()
+    }
+
+    /// `(id, src-id)` of every external `kind` track loaded from `url`.
+    fn copies_of(&self, url: &str, kind: &str) -> Vec<(i64, Option<i64>)> {
+        let count = self.get_i64("track-list/count").unwrap_or(0);
+        (0..count)
+            .filter_map(|i| {
+                let p = |field: &str| format!("track-list/{i}/{field}");
+                let matches = self.get_string(&p("type")).as_deref() == Some(kind)
+                    && self.get_bool(&p("external")) == Some(true)
+                    && self.get_string(&p("external-filename")).as_deref() == Some(url);
+                matches.then(|| Some((self.get_i64(&p("id"))?, self.get_i64(&p("src-id"))))).flatten()
+            })
+            .collect()
+    }
+
+    /// Open the current file again for its `kind` tracks in `wanted` (by
+    /// `src-id`), and move the selection to the copy if one of those is
+    /// selected. Returns the copies' `(mpv id, src-id)`.
+    fn add_separate(&self, url: &str, kind: &str, wanted: &[i64]) -> Result<Vec<(i64, i64)>> {
+        let (command, property) = if kind == "audio" { ("audio-add", "aid") } else { ("sub-add", "sid") };
+        let selected = (self.get_bool(&format!("current-tracks/{kind}/external")) == Some(false))
+            .then(|| self.get_i64(&format!("current-tracks/{kind}/src-id")))
+            .flatten();
+        let before: Vec<i64> = self.copies_of(url, kind).into_iter().map(|(id, _)| id).collect();
+        self.command(&[command.to_owned(), url.to_owned(), "auto".to_owned()])?;
+        let copies: Vec<(i64, i64)> = self
+            .copies_of(url, kind)
+            .into_iter()
+            .filter_map(|(id, src)| Some((id, src?)))
+            .filter(|(id, src)| !before.contains(id) && wanted.contains(src))
+            .collect();
+        if let Some(src) = selected
+            && let Some((id, _)) = copies.iter().find(|(_, s)| *s == src)
+        {
+            self.set_string(property, &id.to_string())?;
+        }
+        Ok(copies)
+    }
+
+    /// Open the wanted separate connections once the file has loaded.
+    fn apply_split(&self, split: &mut Split) -> bool {
+        if !split.loaded {
+            return false;
+        }
+        let mut changed = false;
+        for (kind, wanted, tried, copies) in [
+            ("audio", &split.wanted.audio, &mut split.audio_tried, &mut split.audio_copies),
+            ("sub", &split.wanted.subtitles, &mut split.subtitles_tried, &mut split.subtitle_copies),
+        ] {
+            if wanted.is_empty() || *tried {
+                continue;
+            }
+            *tried = true;
+            match self.add_separate(&split.url, kind, wanted) {
+                Ok(added) => {
+                    tracing::info!("{kind} tracks {wanted:?} now read over their own connection (mpv ids {added:?})");
+                    *copies = added;
+                    changed = true;
+                }
+                Err(e) => tracing::warn!("separate {kind} connection failed: {e}"),
+            }
+        }
+        changed
     }
 }
 
 fn control_loop(inner: &Inner, rx: std::sync::mpsc::Receiver<Cmd>, tracks: &std::sync::Mutex<Vec<Track>>, on_event: &EventFn) {
+    let mut split = Split::default();
+    let refresh = |split: &Split| {
+        let fresh = inner.read_tracks(split);
+        if let Ok(mut slot) = tracks.lock() {
+            *slot = fresh;
+        }
+        on_event(PlayerEvent::TracksChanged);
+    };
     while let Ok(cmd) = rx.recv() {
         let result = match cmd {
+            Cmd::Load { url, start } => {
+                split = Split { url: url.clone(), ..Split::default() };
+                inner
+                    .set_string("start", &start)
+                    .and_then(|()| inner.set_flag("pause", false))
+                    .and_then(|()| inner.command(&["loadfile".to_owned(), url, "replace".to_owned()]))
+            }
+            Cmd::FileLoaded => {
+                // Ignore a late event from the file this one replaced.
+                split.loaded = inner.get_string("path").is_some_and(|path| path == split.url);
+                if inner.apply_split(&mut split) {
+                    refresh(&split);
+                }
+                Ok(())
+            }
+            Cmd::Separate { url, tracks } => {
+                if url == split.url {
+                    split.wanted = tracks;
+                    if inner.apply_split(&mut split) {
+                        refresh(&split);
+                    }
+                }
+                Ok(())
+            }
             Cmd::Command(args) => inner.command(&args),
             Cmd::SetString(name, value) => inner.set_string(&name, &value),
             Cmd::SetFlag(name, value) => inner.set_flag(&name, value),
             Cmd::RefreshTracks => {
-                let fresh = inner.read_tracks();
-                if let Ok(mut slot) = tracks.lock() {
-                    *slot = fresh;
-                }
-                on_event(PlayerEvent::TracksChanged);
+                refresh(&split);
                 Ok(())
             }
             Cmd::Quit => {
@@ -513,9 +661,14 @@ impl Player {
         if let Ok(mut tracks) = self.tracks.lock() {
             tracks.clear();
         }
-        self.set_property("start", &start)?;
-        self.set_flag("pause", false)?;
-        self.command(&["loadfile", url, "replace"])
+        self.send(Cmd::Load { url: url.to_owned(), start })
+    }
+
+    /// Read these track types of the file loaded from `url` over their own
+    /// connections (see [`SeparateTracks`]). Takes effect once the file has
+    /// loaded; ignored if another file was loaded since.
+    pub fn separate_tracks(&self, url: &str, tracks: SeparateTracks) -> Result<()> {
+        self.send(Cmd::Separate { url: url.to_owned(), tracks })
     }
 
     pub fn stop(&self) -> Result<()> {
@@ -641,7 +794,10 @@ fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &
                 }
             }
             MPV_EVENT_SHUTDOWN => return,
-            MPV_EVENT_FILE_LOADED => on_event(PlayerEvent::FileLoaded),
+            MPV_EVENT_FILE_LOADED => {
+                let _ = control.send(Cmd::FileLoaded);
+                on_event(PlayerEvent::FileLoaded);
+            }
             MPV_EVENT_PLAYBACK_RESTART => on_event(PlayerEvent::Started),
             MPV_EVENT_END_FILE => {
                 // SAFETY: END_FILE carries mpv_event_end_file.

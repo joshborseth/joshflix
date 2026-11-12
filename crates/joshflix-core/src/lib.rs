@@ -4,6 +4,7 @@
 //! - [`comet`]: ranked Real-Debrid sources for a movie or episode (ElfHosted Comet).
 //! - [`sources`]: the source model, ranking and next-episode matching.
 //! - [`release`]: release-name parsing, filtering and ranking of those sources.
+//! - [`mp4`]: whether an MP4 keeps its audio or captions far from its video.
 //! - [`realdebrid`]: account checks and turning a torrent into a direct HTTPS stream.
 //! - [`subtitles`]: subtitle lists from the keyless OpenSubtitles v3 service.
 //! - [`store`]: on-device settings, My List and watch progress (redb).
@@ -18,6 +19,7 @@ pub mod comet;
 pub mod error;
 pub mod http;
 pub mod ids;
+pub mod mp4;
 pub mod images;
 pub mod pairing;
 pub mod realdebrid;

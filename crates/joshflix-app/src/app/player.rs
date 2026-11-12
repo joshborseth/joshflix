@@ -200,6 +200,54 @@ impl Controller {
         self.set_screen(Screen::Player);
         self.push_player();
 
+        // Some MP4s keep all their audio (or captions) far from the video, and
+        // one connection can't keep up with the jumps between them. Read the
+        // file's layout alongside mpv's own opening, and give those tracks
+        // their own connections.
+        if joshflix_core::mp4::is_mp4_url(&url) {
+            let http = self.svc.http.clone();
+            let probe_url = url.clone();
+            let started = Instant::now();
+            self.spawn(
+                async move {
+                    tokio::time::timeout(Duration::from_secs(20), joshflix_core::mp4::probe(&http, &probe_url)).await
+                },
+                move |c, result| {
+                    let layout = match result {
+                        Ok(Ok(Some(layout))) => layout,
+                        Ok(Ok(None)) => return tracing::info!("mp4 layout: no usable moov"),
+                        Ok(Err(e)) => return tracing::warn!("mp4 layout: {e}"),
+                        Err(_) => return tracing::warn!("mp4 layout: no answer in 20 s"),
+                    };
+                    let separate = layout.separate();
+                    let distance = |kind| {
+                        layout
+                            .tracks
+                            .iter()
+                            .filter(|t| t.kind == kind)
+                            .filter_map(|t| layout.distance_from_video(t))
+                            .max()
+                            .map_or_else(|| "none".to_owned(), |d| format!("{} MiB", d >> 20))
+                    };
+                    tracing::info!(
+                        "mp4 layout in {:.1} s: audio up to {} from the video, subtitles up to {}; own connections for {:?}",
+                        started.elapsed().as_secs_f64(),
+                        distance(joshflix_core::mp4::Mp4TrackKind::Audio),
+                        distance(joshflix_core::mp4::Mp4TrackKind::Subtitle),
+                        &separate,
+                    );
+                    if !separate.any() || c.player.as_ref().is_none_or(|p| p.url != url) {
+                        return;
+                    }
+                    if let Some(player) = c.video.player() {
+                        let ids = |ids: Vec<u32>| ids.into_iter().map(i64::from).collect();
+                        let tracks = joshflix_player::SeparateTracks { audio: ids(separate.audio), subtitles: ids(separate.subtitles) };
+                        let _ = player.separate_tracks(&url, tracks);
+                    }
+                },
+            );
+        }
+
         // Subtitle list from OpenSubtitles (added after the file loads).
         let langs = self.settings.subtitle_languages.clone();
         let subs = self.svc.subtitles.clone();
