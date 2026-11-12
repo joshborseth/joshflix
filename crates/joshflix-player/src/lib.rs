@@ -156,8 +156,10 @@ pub enum PlayerEvent {
     CacheAhead(f64),
     /// Width of the frames the video output was set up for (`video-out-params/w`),
     /// 0 when it has none. With `force-window` or `vo=null` this can be a dummy
-    /// size without any video: compare with [`PlayerEvent::VideoSize`].
+    /// size without any video: compare with [`PlayerEvent::DecodedWidth`].
     VideoOutputWidth(i64),
+    /// Width of the decoded frames (`video-params/w`), 0 when there are none.
+    DecodedWidth(i64),
     /// Running totals for this file: frames dropped by the video output, and
     /// by the decoder.
     DroppedByOutput(i64),
@@ -666,14 +668,21 @@ fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &
                     let _ = control.send(Cmd::RefreshTracks);
                     continue;
                 }
-                if event.reply_userdata == OBS_VIDEO_OUT {
+                if event.reply_userdata == OBS_VIDEO_OUT || event.reply_userdata == OBS_WIDTH {
                     let width = if prop.format == MPV_FORMAT_INT64 && !prop.data.is_null() {
                         // SAFETY: MPV_FORMAT_INT64 points at an i64.
                         unsafe { *(prop.data as *const i64) }
                     } else {
                         0
                     };
-                    on_event(PlayerEvent::VideoOutputWidth(width));
+                    if event.reply_userdata == OBS_VIDEO_OUT {
+                        on_event(PlayerEvent::VideoOutputWidth(width));
+                    } else {
+                        on_event(PlayerEvent::DecodedWidth(width));
+                        if width > 0 {
+                            on_event(PlayerEvent::VideoSize { width, height: 0 });
+                        }
+                    }
                     continue;
                 }
                 if prop.data.is_null() {
@@ -697,7 +706,6 @@ fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &
                     (OBS_CACHE_STATE, _, Some(v), _) if v < 100 => PlayerEvent::Buffering(Some(v)),
                     (OBS_FPS, Some(v), _, _) => PlayerEvent::FrameRate(v),
                     (OBS_CACHE_AHEAD, Some(v), _, _) => PlayerEvent::CacheAhead(v),
-                    (OBS_WIDTH, _, Some(w), _) => PlayerEvent::VideoSize { width: w, height: 0 },
                     (OBS_HEIGHT, _, Some(h), _) => PlayerEvent::VideoSize { width: 0, height: h },
                     (OBS_EOF, _, _, Some(true)) => PlayerEvent::Ended(EndReason::Eof),
                     (OBS_OUTPUT_DROPS, _, Some(n), _) => PlayerEvent::DroppedByOutput(n),

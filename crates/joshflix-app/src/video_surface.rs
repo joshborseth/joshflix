@@ -54,6 +54,9 @@ struct State {
     attached: Option<Player>,
     /// How the attach call for `attached` went (see [`ATTACHING`]).
     attach_status: Option<Arc<AtomicU8>>,
+    /// Instances with an attach or detach call still running (one that timed
+    /// out keeps going). No new call starts on them until it finishes.
+    busy: Vec<Player>,
 }
 
 /// `State::attach_status` values.
@@ -70,6 +73,7 @@ static STATE: Mutex<State> = Mutex::new(State {
     want_video: false,
     attached: None,
     attach_status: None,
+    busy: Vec::new(),
 });
 /// Held for every blocking mpv call, so the surface can't be destroyed under one.
 static MPV_CALLS: Mutex<()> = Mutex::new(());
@@ -77,6 +81,9 @@ static WORKER: OnceLock<mpsc::Sender<()>> = OnceLock::new();
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static UI_SHOWN: AtomicBool = AtomicBool::new(false);
 static VIDEO_WORKED: AtomicBool = AtomicBool::new(false);
+/// [`give_up`] switched this process to drawing video into the UI; the
+/// version is marked once that shows picture ([`fallback_worked`]).
+static FALLBACK_PENDING: AtomicBool = AtomicBool::new(false);
 
 fn state() -> MutexGuard<'static, State> {
     STATE.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -98,6 +105,7 @@ pub fn init(vm: *mut c_void, activity: *mut c_void) -> bool {
     ENABLED.store(false, Ordering::Relaxed);
     UI_SHOWN.store(false, Ordering::Relaxed);
     VIDEO_WORKED.store(false, Ordering::Relaxed);
+    FALLBACK_PENDING.store(false, Ordering::Relaxed);
     // Nothing from an earlier activity in this process is valid now. Dropped
     // outside the lock: the last Player clone shuts its mpv instance down.
     let stale = {
@@ -265,10 +273,35 @@ pub fn video_worked() {
 /// Video never appeared on mpv's surface: stop using it for this app version
 /// and let mpv go. The caller continues with video drawn into the UI.
 pub fn give_up() {
-    tracing::error!("video never appeared on its own surface; drawing it into the UI from now on");
+    tracing::error!("video never appeared on its own surface; drawing it into the UI for now");
     ENABLED.store(false, Ordering::Relaxed);
-    call_activity_static("layeringFailed");
+    FALLBACK_PENDING.store(true, Ordering::Relaxed);
     wake();
+}
+
+/// After [`give_up`]: video drawn into the UI shows picture, so the separate
+/// surface was the problem. Keep this version on a single surface.
+pub fn fallback_worked() {
+    if FALLBACK_PENDING.swap(false, Ordering::Relaxed) {
+        tracing::warn!("video shows when drawn into the UI; this version keeps a single surface");
+        call_activity_static("layeringFailed");
+    }
+}
+
+/// [`give_up`] ran and [`fallback_worked`] hasn't yet.
+pub fn fallback_pending() -> bool {
+    FALLBACK_PENDING.load(Ordering::Relaxed)
+}
+
+/// The video surface exists and the player screen wants it. Without it, no
+/// picture is expected (e.g. while the TV rebuilds its surfaces).
+pub fn surface_ready() -> bool {
+    let state = state();
+    state.want_video && state.surface.is_some()
+}
+
+fn is_busy(player: &Player) -> bool {
+    state().busy.iter().any(|p| p.same_instance(player))
 }
 
 fn wake() {
@@ -285,8 +318,10 @@ fn wanted_and_attached() -> (Option<Player>, Option<Player>) {
 }
 
 fn already_right(wanted: &Option<Player>, attached: &Option<Player>) -> bool {
+    let failed = || state().attach_status.as_ref().is_some_and(|s| s.load(Ordering::Acquire) == ATTACH_FAILED);
     match (attached, wanted) {
-        (Some(a), Some(w)) => a.same_instance(w),
+        // An attach that timed out and then failed gets detached and retried.
+        (Some(a), Some(w)) => a.same_instance(w) && !failed(),
         (None, None) => true,
         _ => false,
     }
@@ -317,6 +352,10 @@ fn reconcile() {
         return;
     }
     let Some(player) = wanted else { return };
+    if is_busy(&player) {
+        // A timed-out call on it is still running; its end wakes the worker.
+        return;
+    }
     let status = Arc::new(AtomicU8::new(ATTACHING));
     let (wid, width, height) = {
         let mut state = state();
@@ -403,10 +442,20 @@ enum Outcome {
 /// A call that times out keeps running on its own thread.
 fn with_timeout(what: &'static str, player: Player, call: impl FnOnce(&Player) -> joshflix_player::Result<()> + Send + 'static) -> Outcome {
     let (tx, rx) = mpsc::channel();
+    let id = player.clone();
+    state().busy.push(player.clone());
     let spawned = std::thread::Builder::new().name(format!("mpv-{what}")).spawn(move || {
-        let _ = tx.send(call(&player));
+        let result = call(&player);
+        state().busy.retain(|p| !p.same_instance(&player));
+        if let Err(result) = tx.send(result) {
+            // The caller timed out and moved on: whatever waited on this call
+            // gets another pass now.
+            tracing::info!("video surface: a late {what} finished: {:?}", result.0.err());
+            wake();
+        }
     });
     if let Err(e) = spawned {
+        state().busy.retain(|p| !p.same_instance(&id));
         tracing::error!("video surface: {what}: {e}");
         return Outcome::Failed;
     }

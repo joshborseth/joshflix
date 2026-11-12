@@ -30,6 +30,9 @@ const fn parse_u64(s: &str) -> u64 {
     value
 }
 
+/// Exists while the user turned off the separate video layer (read by MainActivity).
+const VIDEO_LAYER_OFF: &str = "single-surface-user";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Action {
     None,
@@ -168,7 +171,7 @@ impl Controller {
             .chain(cfg!(target_os = "android").then(|| {
                 Item::toggle(
                     "Separate video layer",
-                    !self.video_layer_marker().exists(),
+                    self.video_layer_on(),
                     "Video plays on its own layer under the menus. Turn off if video stays black. Applies after restarting Joshflix",
                     Action::VideoLayer,
                 )
@@ -311,9 +314,19 @@ impl Controller {
                 self.save_settings(|s| s.video_compat_mode = next);
             }
             Action::VideoLayer => {
-                // Read by MainActivity when the app starts.
-                let marker = self.video_layer_marker();
-                let result = if marker.exists() { std::fs::remove_file(&marker) } else { std::fs::write(&marker, b"off") };
+                // Markers read by MainActivity when the app starts.
+                let dir = self.platform.data_dir();
+                let result = if self.video_layer_on() {
+                    std::fs::write(dir.join(VIDEO_LAYER_OFF), b"off")
+                } else {
+                    // Also clear an automatic switch-off, so the layer gets another try.
+                    [VIDEO_LAYER_OFF, "single-surface", "ui-strikes", "video-surface-strikes"]
+                        .iter()
+                        .try_for_each(|name| match std::fs::remove_file(dir.join(name)) {
+                            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+                            _ => Ok(()),
+                        })
+                };
                 if let Err(e) = result {
                     self.toast(&format!("Couldn't change the video layer: {e}"));
                 }
@@ -348,9 +361,11 @@ impl Controller {
         self.build_settings();
     }
 
-    /// Exists while the user turned off the separate video layer (Android).
-    fn video_layer_marker(&self) -> std::path::PathBuf {
-        self.platform.data_dir().join("single-surface-user")
+    /// The separate video layer is on for the next start (Android): neither
+    /// turned off here nor switched off automatically after failing.
+    fn video_layer_on(&self) -> bool {
+        let dir = self.platform.data_dir();
+        !dir.join(VIDEO_LAYER_OFF).exists() && !dir.join("single-surface").exists()
     }
 
     // ---- updates ----

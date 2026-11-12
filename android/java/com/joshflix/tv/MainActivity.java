@@ -54,7 +54,7 @@ public class MainActivity extends NativeActivity {
     private static final String SINGLE_SURFACE = "single-surface";
     /** Exists while the user turned layering off in Settings (written by the native side). */
     private static final String SINGLE_SURFACE_USER = "single-surface-user";
-    /** Hold the version code until the UI's first frame / until video showed. */
+    /** Hold "versionCode pid" until the UI's first frame / until video showed. */
     private static final String UI_ATTEMPT = "ui-attempt";
     private static final String VIDEO_ATTEMPT = "video-surface-attempt";
     /** "versionCode count" of attempts that died, per kind. */
@@ -98,7 +98,7 @@ public class MainActivity extends NativeActivity {
         appVersionCode = versionCode();
         boolean layer = decideLayering();
         if (layer) {
-            writeMarker(UI_ATTEMPT);
+            writeAttempt(UI_ATTEMPT);
         }
         super.onCreate(savedInstanceState);
         if (!layer) {
@@ -148,10 +148,17 @@ public class MainActivity extends NativeActivity {
         return true;
     }
 
-    /** A leftover attempt marker means the process died during that attempt. */
+    /**
+     * A leftover attempt marker from another process of this version means
+     * that process died during the attempt. (The same process can leave one
+     * behind without dying, e.g. Back before the first frame.)
+     */
     private static void countStrike(String attempt, String strikes, String when) {
         String version = Long.toString(appVersionCode);
-        if (version.equals(readMarker(attempt))) {
+        String[] marker = String.valueOf(readMarker(attempt)).split(" ");
+        boolean died = marker.length == 2 && marker[0].equals(version)
+                && !marker[1].equals(Integer.toString(Process.myPid()));
+        if (died) {
             int count = 1;
             String[] previous = String.valueOf(readMarker(strikes)).split(" ");
             if (previous.length == 2 && previous[0].equals(version)) {
@@ -257,7 +264,7 @@ public class MainActivity extends NativeActivity {
 
     /** Called by the native side right before mpv attaches to the video surface. */
     public static void layeredVideoStarting() {
-        writeMarker(VIDEO_ATTEMPT);
+        writeAttempt(VIDEO_ATTEMPT);
     }
 
     /** Called by the native side when mpv let go of the video surface cleanly. */
@@ -322,14 +329,20 @@ public class MainActivity extends NativeActivity {
         return writeFile(name, Long.toString(appVersionCode));
     }
 
+    /** "versionCode pid": a later process can tell this one died during the attempt. */
+    private static void writeAttempt(String name) {
+        writeFile(name, appVersionCode + " " + Process.myPid());
+    }
+
     private static boolean writeFile(String name, String text) {
         File dir = filesDir;
         if (dir == null) {
             return false;
         }
         try (FileOutputStream out = new FileOutputStream(new File(dir, name))) {
+            // No fsync: these only need to survive the process dying, which
+            // the page cache does. They're written while mpv calls wait.
             out.write(text.getBytes(StandardCharsets.UTF_8));
-            out.getFD().sync();
             return true;
         } catch (Exception e) {
             Log.e(TAG, "couldn't write " + name, e);

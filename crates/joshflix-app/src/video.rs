@@ -547,10 +547,34 @@ pub fn confirm_own_surface() {
     crate::video_surface::video_worked();
 }
 
-/// Video never appeared on mpv's own surface: draw it into the UI from now on.
+/// Video never appeared on mpv's own surface: draw it into the UI for the
+/// rest of this run ([`confirm_fallback`] makes it stick for this version).
 pub fn give_up_own_surface() {
     #[cfg(target_os = "android")]
     crate::video_surface::give_up();
+}
+
+/// mpv's own surface exists and the player wants it (own-surface mode).
+pub fn own_surface_ready() -> bool {
+    #[cfg(target_os = "android")]
+    return crate::video_surface::surface_ready();
+    #[cfg(not(target_os = "android"))]
+    false
+}
+
+/// After [`give_up_own_surface`], video still has to show when drawn into the UI.
+pub fn fallback_pending() -> bool {
+    #[cfg(target_os = "android")]
+    return crate::video_surface::fallback_pending();
+    #[cfg(not(target_os = "android"))]
+    false
+}
+
+/// Video shows when drawn into the UI after a fallback: keep this version on
+/// a single surface.
+pub fn confirm_fallback() {
+    #[cfg(target_os = "android")]
+    crate::video_surface::fallback_worked();
 }
 
 /// Turn video back on after mpv dropped it because its render context was freed.

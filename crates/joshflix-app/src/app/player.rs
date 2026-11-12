@@ -309,7 +309,7 @@ impl Controller {
                 p.video_out_width = width;
                 return;
             }
-            PlayerEvent::VideoSize { width, .. } if width > 0 => {
+            PlayerEvent::DecodedWidth(width) => {
                 p.video_width = width;
                 return;
             }
@@ -517,16 +517,17 @@ impl Controller {
             self.recover_with_compat_mode();
             return;
         }
+        // The output shows this file's frames: with force-window or vo=null it
+        // can be set up for a dummy size without any video.
+        let output_shows_video = p.video_out_width > 0 && p.video_out_width == p.video_width;
+        let playing = p.started && !p.paused && p.buffering.is_none() && p.error.is_none();
         // Own-surface mode: playing with a video track but no picture means mpv
-        // couldn't show video on its surface. Fall back to drawing it into the UI.
-        if crate::video::surface_mode() {
+        // couldn't show video on its surface. Fall back to drawing it into the
+        // UI. No picture is expected while the surface itself is missing.
+        if crate::video::surface_mode() && crate::video::own_surface_ready() {
             let player = self.video.player();
             let has_video = player.as_ref().is_some_and(|pl| pl.tracks().iter().any(|t| t.kind == TrackKind::Video));
-            // The output shows this file's frames (not a dummy size), on the surface.
-            let picture = p.video_out_width > 0
-                && p.video_out_width == p.video_width
-                && player.as_ref().is_some_and(crate::video::shows_on_own_surface);
-            let playing = p.started && !p.paused && p.buffering.is_none() && p.error.is_none();
+            let picture = output_shows_video && player.as_ref().is_some_and(crate::video::shows_on_own_surface);
             if playing && has_video && !picture {
                 p.picture_since = None;
                 let since = *p.no_picture_since.get_or_insert_with(Instant::now);
@@ -547,6 +548,18 @@ impl Controller {
                 if since.elapsed() > PICTURE_CONFIRM {
                     crate::video::confirm_own_surface();
                 }
+            }
+        } else {
+            p.no_picture_since = None;
+            // After a fallback from the own surface: once video drawn into the
+            // UI shows, the own surface was the problem (not the file).
+            if crate::video::fallback_pending() && playing && output_shows_video {
+                let since = *p.picture_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > PICTURE_CONFIRM {
+                    crate::video::confirm_fallback();
+                }
+            } else {
+                p.picture_since = None;
             }
         }
         if p.drops_logged_at.elapsed() >= DROPS_LOG_EVERY {
