@@ -8,7 +8,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
 use std::rc::Rc;
 
-use joshflix_player::{Player, VideoRenderer};
+use joshflix_player::{Player, TrackKind, VideoRenderer};
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::AppWindow;
@@ -323,8 +323,10 @@ pub struct VideoHost {
     current_id: Cell<u64>,
     /// The current player decodes in compatibility (copy-back) mode.
     compat: Cell<bool>,
-    /// Video was turned off because the GL surface went away (Android background).
-    video_suspended: Cell<bool>,
+    /// Video was turned off because the GL surface went away (Android
+    /// background, or a TV that rebuilds its window on a display-mode switch).
+    /// Holds the video track that was playing, if the track list knew it.
+    video_suspended: Cell<Option<Option<i64>>>,
     /// Times the UI's drawing on the GPU for the TV log's frame summary.
     gpu_timer: RefCell<Option<crate::gpu_timer::GpuTimer>>,
     /// Timer queries were set up (or found unsupported) for this GL context.
@@ -403,7 +405,7 @@ impl VideoHost {
         }
         self.current_id.set(id);
         self.compat.set(compat);
-        self.video_suspended.set(false);
+        self.video_suspended.set(None);
     }
 
     pub fn player(&self) -> Option<Player> {
@@ -447,8 +449,8 @@ impl VideoHost {
                                 *host.renderer.borrow_mut() = Some(renderer);
                                 *host.gl.borrow_mut() = GlState::load(get_proc_address);
                                 // Freeing the old render context disabled video; turn it back on.
-                                if host.video_suspended.replace(false) {
-                                    let _ = player.set_property("vid", "auto");
+                                if let Some(track) = host.video_suspended.take() {
+                                    restore_video(&player, track);
                                 }
                             }
                             Err(e) => tracing::error!("video renderer: {e}"),
@@ -495,9 +497,18 @@ impl VideoHost {
                 RenderingState::RenderingTeardown => {
                     // The GL context is going away (e.g. Android pause): free GPU state now.
                     // mpv disables video when its render context is freed mid-file, so
-                    // remember to re-enable it when a new context arrives.
-                    if host.renderer.borrow().is_some() && host.visible.get() {
-                        host.video_suspended.set(true);
+                    // remember the track to re-enable when a new context arrives. Read
+                    // the cached track list: it still shows the selection before mpv
+                    // drops the video, and reading it never blocks on mpv.
+                    if host.renderer.borrow().is_some()
+                        && let Some(player) = host.player()
+                    {
+                        let video = player.tracks().into_iter().find(|t| t.kind == TrackKind::Video && t.selected);
+                        if let Some(track) = video {
+                            host.video_suspended.set(Some(Some(track.id)));
+                        } else if host.visible.get() {
+                            host.video_suspended.set(Some(None));
+                        }
                     }
                     host.renderer.borrow_mut().take();
                     host.gl.borrow_mut().take();
@@ -511,4 +522,18 @@ impl VideoHost {
             tracing::error!("rendering notifier unavailable: {e:?}");
         }
     }
+}
+
+/// Turn video back on after mpv dropped it because its render context was freed.
+///
+/// mpv deselects the track and resets `vid` to `auto` when that happens, so
+/// setting `vid=auto` again changes nothing and leaves the picture black with
+/// sound playing. Selecting the track by id always switches. Without a known
+/// id, go through `no` so that `auto` is a real change and mpv picks again.
+fn restore_video(player: &Player, track: Option<i64>) {
+    tracing::info!("GL surface is back: re-enabling video (track {track:?})");
+    let _ = match track {
+        Some(id) => player.select_track(TrackKind::Video, Some(id)),
+        None => player.set_property("vid", "no").and_then(|()| player.set_property("vid", "auto")),
+    };
 }

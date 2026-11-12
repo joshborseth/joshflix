@@ -649,14 +649,29 @@ impl Platform for TvPlatform {
             self.app.poll_events(timeout, |event| {
                 if let PollEvent::Main(main) = event {
                     match main {
-                        MainEvent::InitWindow { .. } => self.init_surface(),
-                        MainEvent::TerminateWindow { .. } => self.destroy_surface(),
+                        // Logged: a surface lost mid-playback turns mpv's video off,
+                        // and the TV log should say whether the app was paused or
+                        // the TV rebuilt its window (e.g. on a display-mode switch).
+                        MainEvent::InitWindow { .. } => {
+                            tracing::info!("window: surface created");
+                            self.init_surface()
+                        }
+                        MainEvent::TerminateWindow { .. } => {
+                            tracing::info!("window: surface destroyed");
+                            self.destroy_surface()
+                        }
                         MainEvent::WindowResized { .. } | MainEvent::ContentRectChanged { .. } | MainEvent::ConfigChanged { .. } => {
                             self.resize()
                         }
                         MainEvent::RedrawNeeded { .. } | MainEvent::GainedFocus => self.window.needs_redraw.set(true),
-                        MainEvent::Pause => (self.lifecycle)(false),
-                        MainEvent::Resume { .. } => (self.lifecycle)(true),
+                        MainEvent::Pause => {
+                            tracing::info!("activity paused");
+                            (self.lifecycle)(false)
+                        }
+                        MainEvent::Resume { .. } => {
+                            tracing::info!("activity resumed");
+                            (self.lifecycle)(true)
+                        }
                         MainEvent::Destroy => destroy = true,
                         _ => {}
                     }
