@@ -1,11 +1,19 @@
 //! libmpv playback for Joshflix.
 //!
 //! [`Player`] owns an mpv instance, an event thread and a control thread that
-//! runs every blocking mpv call, so callers (the UI thread) never wait on mpv. [`VideoRenderer`] draws
-//! mpv's frames into the UI's OpenGL context (call it from the UI toolkit's
-//! "before rendering" hook), so the player overlay is ordinary UI drawn on top.
-//! On Android, mpv decodes with MediaCodec and hands frames to OpenGL through
-//! AImageReader without a copy (`hwdec=mediacodec`).
+//! runs every blocking mpv call, so callers (the UI thread) never wait on mpv.
+//!
+//! Video reaches the screen one of two ways:
+//! - [`VideoRenderer`] draws mpv's frames into the UI's OpenGL context (call it
+//!   from the UI toolkit's "before rendering" hook), so the player overlay is
+//!   ordinary UI drawn on top. Desktop, and Android when it can't layer surfaces.
+//! - On Android, mpv can own a separate surface under a translucent UI surface
+//!   ([`PlayerConfig::android_surface`], [`Player::attach_android_surface`]) and
+//!   draw there on its own threads with `vo=gpu`, as mpv-android does.
+//!
+//! On Android, mpv decodes with MediaCodec, copying frames back
+//! (`mediacodec-copy`) or handing them to OpenGL through AImageReader without a
+//! copy (`mediacodec`).
 
 mod ffi;
 
@@ -47,6 +55,9 @@ pub struct PlayerConfig {
     /// Android audio session for the AudioTrack output, so the app can attach
     /// audio effects to it (Audio Normalization). `None` lets AudioTrack pick.
     pub audio_session: Option<i32>,
+    /// Android: mpv draws into its own surface (given later with
+    /// [`Player::attach_android_surface`]) instead of through [`VideoRenderer`].
+    pub android_surface: bool,
 }
 
 impl PlayerConfig {
@@ -61,6 +72,7 @@ impl PlayerConfig {
             user_agent: concat!("Joshflix/", env!("CARGO_PKG_VERSION")).into(),
             config_dir: None,
             audio_session: None,
+            android_surface: false,
         }
     }
 }
@@ -142,6 +154,12 @@ pub enum PlayerEvent {
     VideoSize { width: i64, height: i64 },
     /// Seconds of media buffered ahead of the playhead.
     CacheAhead(f64),
+    /// The video output shows video (`video-out-params` exist), or stopped.
+    VideoOutput(bool),
+    /// Running totals for this file: frames dropped by the video output, and
+    /// by the decoder.
+    DroppedByOutput(i64),
+    DroppedByDecoder(i64),
     Ended(EndReason),
     Log { level: String, text: String },
 }
@@ -159,6 +177,9 @@ const OBS_HEIGHT: u64 = 9;
 const OBS_EOF: u64 = 10;
 const OBS_SELECTION: u64 = 11;
 const OBS_CACHE_AHEAD: u64 = 12;
+const OBS_VIDEO_OUT: u64 = 13;
+const OBS_OUTPUT_DROPS: u64 = 14;
+const OBS_DECODER_DROPS: u64 = 15;
 
 struct Inner {
     mpv: Mpv,
@@ -349,7 +370,8 @@ impl Player {
         let cache = format!("{}MiB", config.cache_mib);
         let back_cache = format!("{}MiB", config.cache_mib / 3);
         let mut options: Vec<(&str, &str)> = vec![
-            ("vo", "libmpv"),
+            // With its own surface, mpv outputs nothing until the surface arrives.
+            ("vo", if config.android_surface { "null" } else { "libmpv" }),
             ("hwdec", &config.hwdec),
             ("keep-open", "yes"),
             ("idle", "yes"),
@@ -384,6 +406,9 @@ impl Player {
         if let Some(ao) = &config.audio_output {
             options.push(("ao", ao));
         }
+        if config.android_surface {
+            options.extend([("gpu-context", "android"), ("opengl-es", "yes"), ("force-window", "no")]);
+        }
         let audio_session = config.audio_session.map(|id| id.to_string());
         if let Some(id) = &audio_session {
             options.push(("audiotrack-session-id", id));
@@ -410,6 +435,10 @@ impl Player {
             (OBS_SELECTION, "sid", MPV_FORMAT_NONE),
             (OBS_SELECTION, "aid", MPV_FORMAT_NONE),
             (OBS_CACHE_AHEAD, "demuxer-cache-duration", MPV_FORMAT_DOUBLE),
+            // Unlike vo-configured, this stays unset with force-window and no video.
+            (OBS_VIDEO_OUT, "video-out-params/w", MPV_FORMAT_INT64),
+            (OBS_OUTPUT_DROPS, "frame-drop-count", MPV_FORMAT_INT64),
+            (OBS_DECODER_DROPS, "decoder-frame-drop-count", MPV_FORMAT_INT64),
         ];
         for (id, name, format) in observe {
             let name = cstring(name);
@@ -538,9 +567,48 @@ impl Player {
         self.set_property("af", filter)
     }
 
+    /// Both handles refer to the same mpv instance.
+    pub fn same_instance(&self, other: &Player) -> bool {
+        Arc::ptr_eq(&self.inner, &other.inner)
+    }
+
     /// The current file's tracks, as of the last change mpv reported. Never blocks.
     pub fn tracks(&self) -> Vec<Track> {
         self.tracks.lock().map(|t| t.clone()).unwrap_or_default()
+    }
+
+    /// Android: start drawing video into `surface`, a JNI global reference to
+    /// an `android.view.Surface` that stays valid until
+    /// [`Player::detach_android_surface`] returns. Blocks while mpv sets up its
+    /// video output, so call it off the UI thread. Same steps as mpv-android.
+    pub fn attach_android_surface(&self, surface: i64, width: i32, height: i32) -> Result<()> {
+        let inner = &self.inner;
+        let name = cstring("wid");
+        let mut wid = surface;
+        // SAFETY: "wid" takes MPV_FORMAT_INT64; the pointer is valid for the call.
+        let code = unsafe { (inner.mpv.mpv_set_property)(inner.handle, name.as_ptr(), MPV_FORMAT_INT64, (&raw mut wid).cast()) };
+        inner.check("mpv_set_property(wid)", code)?;
+        inner.set_string("android-surface-size", &format!("{width}x{height}"))?;
+        // Draw (black, subtitles) even before a video frame arrives.
+        inner.set_string("force-window", "yes")?;
+        inner.set_string("vo", "gpu")
+    }
+
+    /// Android: the surface changed size.
+    pub fn set_android_surface_size(&self, width: i32, height: i32) -> Result<()> {
+        self.set_property("android-surface-size", &format!("{width}x{height}"))
+    }
+
+    /// Android: stop using the surface. Blocks until mpv has let go of it.
+    pub fn detach_android_surface(&self) -> Result<()> {
+        let inner = &self.inner;
+        inner.set_string("vo", "null")?;
+        inner.set_string("force-window", "no")?;
+        let name = cstring("wid");
+        let mut wid = 0i64;
+        // SAFETY: as in attach_android_surface.
+        let code = unsafe { (inner.mpv.mpv_set_property)(inner.handle, name.as_ptr(), MPV_FORMAT_INT64, (&raw mut wid).cast()) };
+        inner.check("mpv_set_property(wid)", code)
     }
 
     /// Stop the threads and destroy mpv once the last clone drops.
@@ -597,6 +665,14 @@ fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &
                     let _ = control.send(Cmd::RefreshTracks);
                     continue;
                 }
+                if event.reply_userdata == OBS_VIDEO_OUT {
+                    let shown = prop.format == MPV_FORMAT_INT64
+                        && !prop.data.is_null()
+                        // SAFETY: MPV_FORMAT_INT64 points at an i64.
+                        && unsafe { *(prop.data as *const i64) } > 0;
+                    on_event(PlayerEvent::VideoOutput(shown));
+                    continue;
+                }
                 if prop.data.is_null() {
                     continue;
                 }
@@ -621,6 +697,8 @@ fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &
                     (OBS_WIDTH, _, Some(w), _) => PlayerEvent::VideoSize { width: w, height: 0 },
                     (OBS_HEIGHT, _, Some(h), _) => PlayerEvent::VideoSize { width: 0, height: h },
                     (OBS_EOF, _, _, Some(true)) => PlayerEvent::Ended(EndReason::Eof),
+                    (OBS_OUTPUT_DROPS, _, Some(n), _) => PlayerEvent::DroppedByOutput(n),
+                    (OBS_DECODER_DROPS, _, Some(n), _) => PlayerEvent::DroppedByDecoder(n),
                     _ => continue,
                 };
                 on_event(event);

@@ -1,7 +1,8 @@
 //! `cargo xtask apk`: cross-compile the app and package a signed APK.
 //!
-//! Steps per ABI: `cargo build` with the NDK clang as linker, then
-//! `aapt2 compile` + `aapt2 link` for the manifest and resources, add
+//! Once: `aapt2 compile` + `aapt2 link` for the manifest and resources, and
+//! `javac` + `d8` for the small Java activity in `android/java`.
+//! Per ABI: `cargo build` with the NDK clang as linker, add `classes.dex` and
 //! `lib/<abi>/*.so` stored uncompressed, `zipalign -P 16`, `apksigner sign`,
 //! and verify the result.
 
@@ -68,7 +69,10 @@ pub fn build(opts: &ApkOptions) -> Result<Vec<PathBuf>> {
     std::fs::create_dir_all(workspace_root().join("dist"))?;
 
     // Manifest and resources do not depend on the ABI: link them once.
-    let base = link_resources(&sdk, &version, &work)?;
+    let base = Base {
+        apk: link_resources(&sdk, &version, &work)?,
+        dex: compile_java(&sdk, &work)?,
+    };
 
     let mut outputs = Vec::new();
     for &abi in &opts.abis {
@@ -121,6 +125,67 @@ fn link_resources(sdk: &Sdk, version: &Version, work: &Path) -> Result<PathBuf> 
             .arg(&compiled),
     )?;
     Ok(base)
+}
+
+/// The ABI-independent parts of every APK.
+struct Base {
+    /// Manifest and resources, from `aapt2 link`.
+    apk: PathBuf,
+    /// The Java activity, from `d8`.
+    dex: PathBuf,
+}
+
+/// Compile `android/java` to `classes.dex` with `javac` and the SDK's `d8`.
+fn compile_java(sdk: &Sdk, work: &Path) -> Result<PathBuf> {
+    let sources = files_with_extension(&workspace_root().join("android/java"), "java")?;
+    ensure!(!sources.is_empty(), "android/java has no Java sources");
+    let android_jar = sdk.android_jar()?;
+    let classes = work.join("classes");
+    let dex_dir = work.join("dex");
+    for dir in [&classes, &dex_dir] {
+        let _ = std::fs::remove_dir_all(dir);
+        std::fs::create_dir_all(dir)?;
+    }
+    util::run(
+        command("javac")
+            .args(["--release", "11", "-Xlint:all", "-Werror", "-Xlint:-options"])
+            .arg("-classpath")
+            .arg(&android_jar)
+            .arg("-d")
+            .arg(&classes)
+            .args(&sources),
+    )
+    .context("javac (install a JDK, 11 or newer)")?;
+    util::run(
+        command(sdk.tool("d8"))
+            .args(["--release", "--min-api", "26"])
+            .arg("--lib")
+            .arg(&android_jar)
+            .arg("--output")
+            .arg(&dex_dir)
+            .args(files_with_extension(&classes, "class")?),
+    )?;
+    let dex = dex_dir.join("classes.dex");
+    ensure!(dex.is_file(), "d8 produced no classes.dex");
+    Ok(dex)
+}
+
+/// Every file under `dir` (recursively) with this extension, sorted.
+fn files_with_extension(dir: &Path, extension: &str) -> Result<Vec<PathBuf>> {
+    let mut found = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).with_context(|| format!("read {}", dir.display()))? {
+            let path = entry?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == extension) {
+                found.push(path);
+            }
+        }
+    }
+    found.sort();
+    Ok(found)
 }
 
 struct CrateInfo {
@@ -295,7 +360,7 @@ fn check_app_lib(sdk: &Sdk, abi: Abi, lib: &Path) -> Result<()> {
 fn package(
     sdk: &Sdk,
     signer: &Signer,
-    base: &Path,
+    base: &Base,
     libs: &[(String, PathBuf)],
     abi: Abi,
     work: &Path,
@@ -303,11 +368,13 @@ fn package(
 ) -> Result<()> {
     let unaligned = work.join(format!("{}-unaligned.apk", abi.android_name()));
     {
-        let mut reader = ZipArchive::new(File::open(base)?).context("open linked APK")?;
+        let mut reader = ZipArchive::new(File::open(&base.apk)?).context("open linked APK")?;
         let mut writer = ZipWriter::new(File::create(&unaligned)?);
         for i in 0..reader.len() {
             writer.raw_copy_file(reader.by_index_raw(i)?)?;
         }
+        writer.start_file("classes.dex", SimpleFileOptions::default())?;
+        std::io::copy(&mut File::open(&base.dex)?, &mut writer).context("add classes.dex")?;
         // Stored, so Android can mmap the libraries straight from the APK
         // (`extractNativeLibs="false"`).
         let options = SimpleFileOptions::default()

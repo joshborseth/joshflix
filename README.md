@@ -4,8 +4,9 @@
 
 A native Android TV app for movies and shows, written entirely in Rust. It takes the shape of the Stremio TV app (catalogs, detail pages, a source picker, a full-featured player) with its own design and code, and streams through Real-Debrid like Jedflix.
 
-- **UI:** [Slint](https://slint.dev) 1.18 with its femtovg OpenGL renderer, D-pad first. On Android it runs on our own small platform layer (`src/android_platform.rs`: android-activity, glutin EGL, femtovg) instead of Slint's Skia backend. That keeps 32-bit ARM TVs supported, lets mpv draw into the same GL context, and lets the remote's media keys reach the player.
-- **Playback:** libmpv (Stremio's prebuilt Android build: mpv + FFmpeg + libass) with MediaCodec hardware decoding, drawn underneath the UI in the same OpenGL context. Plays MKV, DTS, TrueHD, ASS subtitles and HDR.
+- **UI:** [Slint](https://slint.dev) 1.18 with its femtovg OpenGL renderer, D-pad first. On Android it runs on our own small platform layer (`src/android_platform.rs`: android-activity, glutin EGL, femtovg) instead of Slint's Skia backend. That keeps 32-bit ARM TVs supported and lets the remote's media keys reach the player.
+- **Playback:** libmpv (Stremio's prebuilt Android build: mpv + FFmpeg + libass) with MediaCodec hardware decoding. Plays MKV, DTS, TrueHD, ASS subtitles and HDR.
+  - On Android, mpv draws into its own surface underneath a translucent UI surface (`MainActivity`, the same setup as mpv-android), on its own threads. Video never passes through the UI's OpenGL context, so a busy or lost UI surface can't stall or stop it. On desktop, and on a TV where layering fails, mpv draws into the UI's OpenGL context instead.
   - Every blocking mpv call runs on a control thread, so the UI never waits on the decoder.
   - If a TV's driver stalls on zero-copy decoding, the app continues on a fresh mpv instance in compatibility (copy-back) mode and remembers that choice.
 - **Titles and artwork:** Cinemeta (Stremio's keyless metadata service).
@@ -41,7 +42,7 @@ Screenshots of the first desktop build are in [docs/screenshots](docs/screenshot
 | --- | --- |
 | `crates/joshflix-app` | The TV app: Slint UI (`ui/*.slint`) and the Rust controller (`src/app/*`). Builds as `libjoshflix_app.so` for Android and as a `joshflix` binary for desktop development. |
 | `crates/joshflix-core` | Domain logic with no UI: Cinemeta, Comet, Real-Debrid, OpenSubtitles, release parsing and ranking, redb storage, relay and update clients, artwork cache. |
-| `crates/joshflix-player` | Our own libmpv FFI (loaded at runtime) and the OpenGL render bridge. |
+| `crates/joshflix-player` | Our own libmpv FFI (loaded at runtime), the OpenGL render bridge, and attaching mpv to an Android surface. |
 | `crates/joshflix-protocol` | Wire types shared by the app and the relay. |
 | `crates/joshflix-relay` | The private pairing and update server ([deploy/README.md](deploy/README.md)). |
 | `xtask` | `cargo xtask`: APK builds without Gradle, install and run over adb, publishing updates ([android/README.md](android/README.md)). |

@@ -17,6 +17,8 @@ mod logsink;
 mod perf;
 pub mod platform;
 mod video;
+#[cfg(target_os = "android")]
+mod video_surface;
 
 use std::rc::Rc;
 
@@ -145,6 +147,7 @@ fn android_main(app: android_activity::AndroidApp) {
             return;
         }
     }
+    video_surface::init(app.vm_as_ptr(), app.activity_as_ptr());
     let platform = Rc::new(platform::android::Android::new(app));
     joshflix_player::android::set_java_vm(platform.vm_ptr());
     if let Err(e) = run(platform) {

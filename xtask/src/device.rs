@@ -13,7 +13,7 @@ use crate::util;
 use crate::version::Version;
 
 pub const PACKAGE: &str = "com.joshflix.tv";
-pub const ACTIVITY: &str = "android.app.NativeActivity";
+pub const ACTIVITY: &str = ".MainActivity";
 
 pub struct DeviceOptions {
     serial: Option<String>,

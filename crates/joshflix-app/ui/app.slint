@@ -185,6 +185,7 @@ export global AppState {
     in property <string> toast;
     in property <bool> toast-shown;
     in property <bool> video-visible;          // draw video under the UI
+    in property <bool> video-behind;           // video has its own surface below this one (Android)
     callback key(string) -> bool;
 }
 
@@ -238,7 +239,8 @@ export component AppWindow inherits Window {
     title: "Joshflix";
     preferred-width: 960px;
     preferred-height: 540px;
-    background: AppState.video-visible ? #000000 : Theme.bg;
+    // With its own surface below, video shows through a transparent window.
+    background: !AppState.video-visible ? Theme.bg : AppState.video-behind ? transparent : #000000;
     default-font-family: "Inter";
     default-font-size: Theme.text-md;
     forward-focus: keys;

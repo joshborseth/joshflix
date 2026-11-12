@@ -1,13 +1,13 @@
 # Android packaging
 
-Joshflix ships as a plain `NativeActivity` APK built without Gradle or Java.
-`cargo xtask` cross-compiles `joshflix-app` and packages it with the SDK's `aapt2`, `zipalign`, and `apksigner`.
+Joshflix ships as a `NativeActivity` APK built without Gradle.
+`cargo xtask` cross-compiles `joshflix-app`, compiles the one Java class in `android/java` with `javac` and the SDK's `d8`, and packages them with `aapt2`, `zipalign`, and `apksigner`.
 
 ## Prerequisites
 
 - Android SDK at `~/Android/Sdk` (or `ANDROID_HOME`) with `build-tools;35.0.0`, `platforms;android-35`, `platform-tools`, and `ndk;27.2.12479018`.
 - Rust targets `armv7-linux-androideabi`, `aarch64-linux-android`, and `x86_64-linux-android`.
-- `keytool` (any JDK), `curl`, and `rsvg-convert` (only for `cargo xtask icons`).
+- A JDK, 11 or newer (`javac`, `keytool`), `curl`, and `rsvg-convert` (only for `cargo xtask icons`).
 
 ## Commands
 
@@ -16,7 +16,7 @@ Joshflix ships as a plain `NativeActivity` APK built without Gradle or Java.
 | `cargo xtask fetch-libmpv` | Downloads the pinned libmpv release, checks its SHA-256, and extracts the libraries to `.local/libmpv/1.0.0-stremio02/<abi>/`. `apk` runs this automatically when needed. |
 | `cargo xtask apk [--abi arm\|arm64\|x86_64\|all] [--debug]` | Builds `dist/joshflix-<versionName>-<abi>.apk` (release by default; `--debug` adds a `-debug` suffix). ABIs build one after another. |
 | `cargo xtask install [--serial S] [--debug]` | Runs `adb install -r` with the dist APK for the first ABI in the device's `ro.product.cpu.abilist`. |
-| `cargo xtask run [--serial S] [--debug] [--build] [--logcat]` | Installs and launches `com.joshflix.tv/android.app.NativeActivity`. `--build` builds the device's ABI first; `--logcat` follows the app's log afterwards. |
+| `cargo xtask run [--serial S] [--debug] [--build] [--logcat]` | Installs and launches `com.joshflix.tv/.MainActivity`. `--build` builds the device's ABI first; `--logcat` follows the app's log afterwards. |
 | `cargo xtask logcat [--serial S]` | Follows `adb logcat --pid` for the running app. |
 | `cargo xtask publish [--notes FILE]` | Copies the three release APKs to `$JOSHFLIX_RELAY_DATA/updates/` (default `~/.local/share/joshflix-relay/updates/`) and writes `manifest.json` atomically. |
 | `cargo xtask icons` | Rasterizes `assets/icon.svg`, `assets/icon-foreground.svg`, and `assets/banner.svg` into `android/res/` and `assets/icon-512.png`. |
@@ -70,7 +70,7 @@ The AAR has `jni/<abi>/` for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`. We
 | `libmpv.so` | mpv v0.41.0. Enabled features include libplacebo, `gpu`/`gpu-next`, `egl-android`, `mediacodec` hwdec, AAudio, AudioTrack, OpenSL ES, libass, Lua |
 | `libavcodec.so`, `libavformat.so`, `libavutil.so`, `libavfilter.so`, `libavdevice.so`, `libswresample.so`, `libswscale.so` | FFmpeg as separate shared libraries (symbol version `LIBAVCODEC_63`). `libavcodec` links `libmediandk.so` for MediaCodec. |
 | `libc++_shared.so` | The NDK C++ runtime that libmpv needs. Any C++ in our own crates must link against `c++_shared` too, so only one copy exists. |
-| `libplayer.so` | **Not shipped.** JNI glue for the AAR's Kotlin class `dev.jdtech.mpv.MPVLib`. We have no Java code, so it is useless to us. |
+| `libplayer.so` | **Not shipped.** JNI glue for the AAR's Kotlin class `dev.jdtech.mpv.MPVLib`, which we don't use: the player crate calls libmpv directly. |
 
 `libmpv.so` needs (`DT_NEEDED`): all seven FFmpeg libraries, `libc++_shared.so`, and the system libraries `libandroid`, `libOpenSLES`, `libEGL`, `libz`, `libm`, `libdl`, `libc`.
 The 64-bit libraries are aligned to 16 KB. On `armeabi-v7a`, `libc++_shared.so` is aligned to 4 KB, which is fine because 32-bit processes always use 4 KB pages.
@@ -90,5 +90,9 @@ The AAR has no C headers. The player crate declares the mpv and `av_jni_*` funct
   Also call `av_jni_set_android_app_ctx(activity_or_context, NULL)` if a codec needs the app context.
   mpv's AudioTrack output reads the same JavaVM through FFmpeg.
 - `minSdk` is 26 (Android 8.0). The NDK clang wrappers are `<triple>26-clang`.
-- With `android:hasCode="false"` there is no Java code. Anything that needs Java APIs, such as installing a downloaded update with `PackageInstaller`, must go through JNI on the `JavaVM`.
+- The only Java code is `com.joshflix.tv.MainActivity` (`android/java`), a `NativeActivity` subclass that stacks two `SurfaceView`s: mpv's video surface at the bottom and a translucent UI surface on top, which it hands to the native side in place of the window's surface. The native side reaches it through the activity's class loader (`src/video_surface.rs`): it registers `nativeVideoSurface`, attaches mpv to that surface while the player is open, and confirms the first UI frame.
+  That version of the app then uses a single surface for good (`files/single-surface` holds its version code) when:
+  - no UI frame is confirmed within 15 s (the activity also closes, so reopening works);
+  - the process died while mpv was starting on the video surface, before video showed (`files/video-surface-attempt` was left behind);
+  - playback runs 8 s with a video track but no picture on mpv's surface. The app then also switches to drawing video into the UI right away, on a fresh mpv instance. Anything else that needs Java APIs, such as installing a downloaded update with `PackageInstaller`, goes through JNI on the `JavaVM`.
 - The window background is `#0B0D12` (theme `Theme.Joshflix`), so the first frame should match it.

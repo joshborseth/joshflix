@@ -264,8 +264,9 @@ impl TvPlatform {
             return;
         }
         self.window.needs_redraw.set(false);
-        if let Err(e) = self.window.renderer.render() {
-            tracing::warn!("render: {e}");
+        match self.window.renderer.render() {
+            Ok(()) => crate::video_surface::ui_shown(),
+            Err(e) => tracing::warn!("render: {e}"),
         }
     }
 

@@ -376,6 +376,7 @@ impl Controller {
         let state = AppState::get(&self.ui);
         state.set_screen(screen);
         state.set_video_visible(screen == Screen::Player && self.player.as_ref().is_some_and(|p| p.video_shown));
+        state.set_video_behind(crate::video::surface_mode());
         self.video.set_visible(state.get_video_visible());
         self.ui.window().request_redraw();
     }

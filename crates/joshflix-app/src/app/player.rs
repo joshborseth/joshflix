@@ -23,6 +23,11 @@ const COUNTDOWN_SECS: u64 = 10;
 const OPEN_TIMEOUT: Duration = Duration::from_secs(45);
 /// Loaded and well buffered, yet no picture after this long: the decoder is stuck.
 const DECODE_TIMEOUT: Duration = Duration::from_secs(40);
+/// How long playback may run without picture on mpv's own surface before the
+/// app switches to drawing video into the UI.
+const NO_PICTURE_TIMEOUT: Duration = Duration::from_secs(8);
+/// How often the TV log gets a dropped-frames line during playback.
+const DROPS_LOG_EVERY: Duration = Duration::from_secs(10);
 
 const CONTROL_COUNT_WITH_NEXT: usize = 7;
 const CONTROL_COUNT: usize = 6;
@@ -87,6 +92,15 @@ pub struct PlayerCtl {
     overlay_shown: Option<bool>,
     /// Audio Normalization is on.
     normalize: bool,
+    /// mpv's video output is showing video.
+    video_out: bool,
+    /// Since when playback has run without picture (own-surface mode).
+    no_picture_since: Option<Instant>,
+    /// Frames dropped so far by the video output and the decoder, and the
+    /// totals at the last log line.
+    drops: (i64, i64),
+    drops_logged: (i64, i64),
+    drops_logged_at: Instant,
 }
 
 impl PlayerCtl {
@@ -111,6 +125,7 @@ impl Controller {
         let wanted = self.settings.audio_normalization;
         let normalize = self.apply_audio_normalization(&player, wanted, false) && wanted;
         let _ = player.set_subtitle_scale(f64::from(self.settings.subtitle_scale));
+        crate::video::want_video(true);
         if let Err(e) = player.load(&url, request.resume_at) {
             self.toast(&e.to_string());
             return;
@@ -155,6 +170,11 @@ impl Controller {
             opened_at: Instant::now(),
             open_timed_out: false,
             last_mpv_error: None,
+            video_out: false,
+            no_picture_since: None,
+            drops: (0, 0),
+            drops_logged: (0, 0),
+            drops_logged_at: Instant::now(),
             overlay_shown: None,
             normalize,
         });
@@ -266,6 +286,21 @@ impl Controller {
             }
             PlayerEvent::CacheAhead(secs) => {
                 p.cache_ahead = secs;
+                return;
+            }
+            PlayerEvent::DroppedByOutput(n) => {
+                p.drops.0 = n;
+                return;
+            }
+            PlayerEvent::DroppedByDecoder(n) => {
+                p.drops.1 = n;
+                return;
+            }
+            PlayerEvent::VideoOutput(shown) => {
+                p.video_out = shown;
+                if shown && let Some(player) = self.video.player() {
+                    crate::video::video_shown(&player);
+                }
                 return;
             }
             PlayerEvent::Paused(paused) => {
@@ -472,6 +507,37 @@ impl Controller {
             self.recover_with_compat_mode();
             return;
         }
+        // Own-surface mode: playing with a video track but no picture means mpv
+        // couldn't show video on its surface. Fall back to drawing it into the UI.
+        if crate::video::surface_mode() {
+            let player = self.video.player();
+            let has_video = player.as_ref().is_some_and(|pl| pl.tracks().iter().any(|t| t.kind == TrackKind::Video));
+            // mpv's null output also "shows" video while it has no surface.
+            let picture = p.video_out && player.as_ref().is_some_and(crate::video::shows_on_own_surface);
+            let playing = p.started && !p.paused && p.buffering.is_none() && p.error.is_none();
+            if playing && has_video && !picture {
+                let since = *p.no_picture_since.get_or_insert_with(Instant::now);
+                if since.elapsed() > NO_PICTURE_TIMEOUT {
+                    tracing::warn!("no picture {NO_PICTURE_TIMEOUT:?} into playback on mpv's own surface");
+                    self.recover_with_embedded_video();
+                    return;
+                }
+            } else {
+                p.no_picture_since = None;
+            }
+        }
+        if p.drops_logged_at.elapsed() >= DROPS_LOG_EVERY {
+            if p.started && !p.paused && p.drops != p.drops_logged {
+                tracing::info!(
+                    "playback drops: {} frames by the video output, {} by the decoder in {:.0} s",
+                    p.drops.0 - p.drops_logged.0,
+                    p.drops.1 - p.drops_logged.1,
+                    p.drops_logged_at.elapsed().as_secs_f64(),
+                );
+            }
+            p.drops_logged = p.drops;
+            p.drops_logged_at = Instant::now();
+        }
         // Never spin forever: say what went wrong instead.
         if p.error.is_none() && !p.video_shown && p.opened_at.elapsed() > OPEN_TIMEOUT {
             tracing::warn!("stream didn't open within {OPEN_TIMEOUT:?} (last mpv error: {:?})", p.last_mpv_error);
@@ -620,6 +686,7 @@ impl Controller {
 
     fn exit_player(&mut self) {
         self.stop_playback(true);
+        crate::video::want_video(false);
         self.pop_screen();
     }
 
@@ -733,6 +800,24 @@ impl Controller {
                 let mut request = p.request.clone();
                 request.resume_at = Some(p.position.max(p.request.resume_at.unwrap_or(0.0)));
                 self.toast("Switched to compatibility video mode for this TV");
+                self.start_playback(request, p.source, p.url);
+            }
+            Err(e) => self.toast(&format!("The video player couldn't restart: {e}")),
+        }
+    }
+
+    /// Video never appeared on mpv's own surface: draw it into the UI from now
+    /// on, and continue on a fresh mpv instance that does.
+    fn recover_with_embedded_video(&mut self) {
+        crate::video::give_up_own_surface();
+        let Some(p) = self.player.take() else { return };
+        let compat = self.video.is_compat();
+        match crate::video::VideoHost::create_player(compat, self.platform.audio_session()) {
+            Ok(player) => {
+                self.video.replace_player(player, compat);
+                let mut request = p.request.clone();
+                request.resume_at = Some(p.position.max(p.request.resume_at.unwrap_or(0.0)));
+                self.toast("Switched to the classic video mode for this TV");
                 self.start_playback(request, p.source, p.url);
             }
             Err(e) => self.toast(&format!("The video player couldn't restart: {e}")),

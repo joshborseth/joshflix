@@ -339,6 +339,8 @@ impl VideoHost {
     pub fn set_player(&self, player: Result<(Player, u64), String>, compat: bool) {
         match player {
             Ok((player, id)) => {
+                #[cfg(target_os = "android")]
+                crate::video_surface::set_player(player.clone());
                 *self.player.borrow_mut() = Some(player);
                 self.current_id.set(id);
                 self.compat.set(compat);
@@ -355,11 +357,12 @@ impl VideoHost {
     pub fn create_player(compat_mode: bool, audio_session: Option<i32>) -> Result<(Player, u64), String> {
         let mut config = joshflix_player::PlayerConfig::for_platform();
         config.audio_session = audio_session;
+        config.android_surface = surface_mode();
         if compat_mode && cfg!(target_os = "android") && std::env::var("JOSHFLIX_HWDEC").is_err() {
             config.hwdec = "mediacodec-copy,no".into();
         }
         let id = NEXT_PLAYER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::info!("player {id}: hwdec={} compat={compat_mode}", config.hwdec);
+        tracing::info!("player {id}: hwdec={} compat={compat_mode} own surface={}", config.hwdec, config.android_surface);
         Player::new(&config, move |event| {
             // Log mpv's messages right here on its event thread, so they still
             // reach logcat and the relay when the UI thread is stuck.
@@ -395,6 +398,8 @@ impl VideoHost {
         if let Some(renderer) = self.renderer.borrow_mut().take() {
             std::mem::forget(renderer);
         }
+        #[cfg(target_os = "android")]
+        crate::video_surface::set_player(player.clone());
         if let Some(old) = self.player.borrow_mut().replace(player) {
             let _ = old.stop();
             std::mem::forget(old);
@@ -427,7 +432,9 @@ impl VideoHost {
                 RenderingState::BeforeRendering => {
                     let Some(ui) = weak.upgrade() else { return };
                     let size = ui.window().size();
+                    // With its own surface (Android), mpv draws video itself.
                     if host.renderer.borrow().is_none()
+                        && !surface_mode()
                         && let Some(player) = host.player()
                     {
                         let redraw = weak.clone();
@@ -504,6 +511,48 @@ impl VideoHost {
             tracing::error!("rendering notifier unavailable: {e:?}");
         }
     }
+}
+
+/// mpv draws into its own surface under the UI instead of through [`VideoRenderer`].
+pub fn surface_mode() -> bool {
+    #[cfg(target_os = "android")]
+    return crate::video_surface::enabled();
+    #[cfg(not(target_os = "android"))]
+    false
+}
+
+/// The player screen opened (`true`) or closed: with its own surface, mpv
+/// holds it only while the player is open.
+pub fn want_video(on: bool) {
+    #[cfg(target_os = "android")]
+    crate::video_surface::want_video(on);
+    #[cfg(not(target_os = "android"))]
+    let _ = on;
+}
+
+/// `player` is attached to mpv's own surface (own-surface mode).
+pub fn shows_on_own_surface(player: &Player) -> bool {
+    #[cfg(target_os = "android")]
+    return crate::video_surface::is_attached(player);
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = player;
+        false
+    }
+}
+
+/// mpv's video output started showing video.
+pub fn video_shown(player: &Player) {
+    if shows_on_own_surface(player) {
+        #[cfg(target_os = "android")]
+        crate::video_surface::video_worked();
+    }
+}
+
+/// Video never appeared on mpv's own surface: draw it into the UI from now on.
+pub fn give_up_own_surface() {
+    #[cfg(target_os = "android")]
+    crate::video_surface::give_up();
 }
 
 /// Turn video back on after mpv dropped it because its render context was freed.
