@@ -20,7 +20,12 @@ thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.54.1", features = ["rt-multi-thread", "macros", "time", "sync", "fs", "net"] }
-reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls", "gzip", "http2"] }
+reqwest = { version = "0.13.5", default-features = false, features = ["json", "rustls-no-provider", "gzip", "http2", "form", "stream"] }
+# TLS: ring provider + Mozilla roots, so Android needs no Java platform verifier.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1.0.12"
+base64 = "0.22"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 url = "2.5.8"
 sha2 = "0.11.1"
 rand = "0.10.3"

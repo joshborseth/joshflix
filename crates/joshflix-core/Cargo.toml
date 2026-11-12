@@ -1,8 +1,28 @@
 [package]
 name = "joshflix-core"
+description = "Joshflix domain logic: Cinemeta, Torrentio, Real-Debrid, OpenSubtitles, ranking, storage"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
+joshflix-protocol.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+url.workspace = true
+sha2.workspace = true
+redb.workspace = true
+image.workspace = true
+rustls.workspace = true
+webpki-roots.workspace = true
+futures-util.workspace = true
+base64.workspace = true
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "test-util"] }
+axum.workspace = true

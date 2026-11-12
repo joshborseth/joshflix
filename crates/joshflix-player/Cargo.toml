@@ -1,8 +1,12 @@
 [package]
 name = "joshflix-player"
+description = "libmpv playback for Joshflix: our own minimal FFI, loaded at runtime, rendered into the UI's OpenGL context"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
 
 [dependencies]
+libloading.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
