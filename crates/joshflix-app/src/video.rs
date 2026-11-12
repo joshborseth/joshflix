@@ -325,6 +325,10 @@ pub struct VideoHost {
     compat: Cell<bool>,
     /// Video was turned off because the GL surface went away (Android background).
     video_suspended: Cell<bool>,
+    /// Times the UI's drawing on the GPU for the TV log's frame summary.
+    gpu_timer: RefCell<Option<crate::gpu_timer::GpuTimer>>,
+    /// Timer queries were set up (or found unsupported) for this GL context.
+    gpu_timer_tried: Cell<bool>,
 }
 
 static NEXT_PLAYER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -452,10 +456,10 @@ impl VideoHost {
                     }
                     // mpv needs the render context before it can open any file, so it's
                     // created on the first frame; video is only drawn while visible.
-                    if !host.visible.get() {
-                        return;
-                    }
-                    if let Some(renderer) = host.renderer.borrow().as_ref() {
+                    if host.visible.get()
+                        && let Some(renderer) = host.renderer.borrow().as_ref()
+                    {
+                        let started = crate::perf::now_ns();
                         let gl = host.gl.borrow();
                         let snapshot = gl.as_ref().map(GlState::capture);
                         // Render into whatever framebuffer the UI renderer is drawing to.
@@ -464,9 +468,24 @@ impl VideoHost {
                         if let (Some(gl), Some(snapshot)) = (gl.as_ref(), snapshot.as_ref()) {
                             gl.restore(snapshot);
                         }
+                        crate::perf::video_drawn(crate::perf::now_ns() - started);
                     }
+                    // Timed after the video: mpv runs its own timer queries, and two
+                    // can't be active at once.
+                    if !host.gpu_timer_tried.replace(true) {
+                        // SAFETY: Slint's GL context is current during BeforeRendering.
+                        *host.gpu_timer.borrow_mut() = unsafe { crate::gpu_timer::GpuTimer::new(get_proc_address) };
+                    }
+                    if let Some(timer) = host.gpu_timer.borrow_mut().as_mut() {
+                        timer.begin();
+                    }
+                    crate::perf::draw_started(crate::perf::now_ns());
                 }
                 RenderingState::AfterRendering => {
+                    crate::perf::draw_finished(crate::perf::now_ns());
+                    if let Some(timer) = host.gpu_timer.borrow_mut().as_mut() {
+                        timer.end();
+                    }
                     if host.visible.get()
                         && let Some(renderer) = host.renderer.borrow().as_ref()
                     {
@@ -482,6 +501,8 @@ impl VideoHost {
                     }
                     host.renderer.borrow_mut().take();
                     host.gl.borrow_mut().take();
+                    host.gpu_timer.borrow_mut().take();
+                    host.gpu_timer_tried.set(false);
                 }
                 _ => {}
             }

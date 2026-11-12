@@ -375,6 +375,53 @@ const STATS_GAP_NS: i64 = 100_000_000;
 /// How often the frame summary goes to the log while the UI animates.
 const STATS_WINDOW_NS: i64 = 10_000_000_000;
 
+/// The UI thread's own clocks, to split a frame's wall time into running on a
+/// core, waiting for one, and blocked (on the GPU driver, mostly).
+struct ThreadClock {
+    /// `/proc/thread-self/schedstat`: run time, run-queue wait, timeslices.
+    schedstat: Option<std::fs::File>,
+}
+
+impl ThreadClock {
+    /// Must be created on the thread it measures.
+    fn new() -> Self {
+        Self { schedstat: std::fs::File::open("/proc/thread-self/schedstat").ok() }
+    }
+
+    /// (CPU time, time spent runnable but waiting for a core), in ns.
+    fn sample(&self) -> (i64, i64) {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: valid pointer to a timespec. The thread clock is exact,
+        // unlike schedstat's run time, which lags until the next tick.
+        unsafe { libc::clock_gettime(libc::CLOCK_THREAD_CPUTIME_ID, &mut ts) };
+        let cpu = i64::from(ts.tv_sec) * 1_000_000_000 + i64::from(ts.tv_nsec);
+        (cpu, self.run_delay().unwrap_or(0))
+    }
+
+    fn run_delay(&self) -> Option<i64> {
+        use std::os::unix::fs::FileExt;
+        let mut buf = [0u8; 96];
+        let n = self.schedstat.as_ref()?.read_at(&mut buf, 0).ok()?;
+        std::str::from_utf8(&buf[..n]).ok()?.split_ascii_whitespace().nth(1)?.parse().ok()
+    }
+}
+
+/// One drawn frame, for [`FrameStats`].
+struct FrameSample {
+    now_ns: i64,
+    /// Wall time: Slint's update, drawing and the buffer swap.
+    render_ns: i64,
+    swap_ns: i64,
+    update_ns: i64,
+    /// UI thread CPU time during the frame.
+    cpu_ns: i64,
+    /// UI thread runnable but without a core.
+    runq_ns: i64,
+    marks: crate::perf::FrameMarks,
+    /// Vsyncs skipped since the previous frame of an ongoing animation.
+    skipped: Option<u64>,
+}
+
 /// Frame pacing summary for the TV log, to see whether animations drop frames.
 #[derive(Default)]
 struct FrameStats {
@@ -392,44 +439,103 @@ struct FrameStats {
     swap_ns: Vec<i64>,
     /// Slint's timers, animations and property updates before drawing.
     update_ns: Vec<i64>,
+    /// Slint drawing the UI and handing it to GL, without the swap.
+    draw_ns: Vec<i64>,
+    /// UI thread on a core.
+    cpu_ns: Vec<i64>,
+    /// UI thread waiting for a core (other threads or processes had them all).
+    runq_ns: Vec<i64>,
+    /// The rest of the frame: the UI thread was blocked, mostly in the GPU driver.
+    blocked_ns: Vec<i64>,
+    /// Frames that drew a video frame. They follow the film's frame rate, so
+    /// they get their own summary instead of counting as late UI frames.
+    video_frames: u32,
+    video_render_ns: Vec<i64>,
+    /// mpv's part of a video frame.
+    video_ns: Vec<i64>,
+}
+
+fn ms(ns: i64) -> f64 {
+    ns as f64 / 1e6
+}
+
+/// The `q` quantile of `values` in ms, or 0 when empty.
+fn pick(values: &mut [i64], q: f64) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.sort_unstable();
+    ms(values[((values.len() - 1) as f64 * q) as usize])
 }
 
 impl FrameStats {
-    fn frame(&mut self, now_ns: i64, render_ns: i64, swap_ns: i64, update_ns: i64, skipped: Option<u64>) {
+    fn frame(&mut self, f: FrameSample) {
         if self.frames == 0 {
-            self.start_ns = now_ns;
+            self.start_ns = f.now_ns;
             // Counters cover this window only.
             let _ = crate::perf::take();
+            let _ = crate::perf::take_gpu();
         }
         self.frames += 1;
-        self.render_ns.push(render_ns);
-        self.swap_ns.push(swap_ns);
-        self.update_ns.push(update_ns);
-        if let Some(skipped) = skipped {
-            self.paced += 1;
-            self.missed += skipped;
-            self.late += u32::from(skipped > 0);
+        if let Some(video_ns) = f.marks.video_ns {
+            self.video_frames += 1;
+            self.video_render_ns.push(f.render_ns);
+            self.video_ns.push(video_ns);
+        } else {
+            self.render_ns.push(f.render_ns);
+            self.swap_ns.push(f.swap_ns);
+            self.update_ns.push(f.update_ns);
+            self.cpu_ns.push(f.cpu_ns);
+            self.runq_ns.push(f.runq_ns);
+            self.blocked_ns.push((f.render_ns - f.cpu_ns - f.runq_ns).max(0));
+            if let Some(draw_ns) = f.marks.draw_ns {
+                self.draw_ns.push(draw_ns);
+            }
+            if let Some(skipped) = f.skipped {
+                self.paced += 1;
+                self.missed += skipped;
+                self.late += u32::from(skipped > 0);
+            }
         }
-        if now_ns - self.start_ns >= STATS_WINDOW_NS {
-            self.report();
+        if f.now_ns - self.start_ns >= STATS_WINDOW_NS {
+            self.report(f.now_ns);
             *self = Self::default();
         }
     }
 
-    fn report(&mut self) {
+    fn report(&mut self, now_ns: i64) {
+        let (keys, images, image_mean, image_max) = crate::perf::take();
+        let mut gpu = crate::perf::take_gpu();
+        let gpu = if gpu.is_empty() {
+            "gpu n/a".to_owned()
+        } else {
+            format!("gpu median {:.1} p95 {:.1} ms", pick(&mut gpu, 0.5), pick(&mut gpu, 0.95))
+        };
+        // Mostly video: the frame rate is the film's, not dropped UI frames.
+        if self.video_frames * 2 > self.frames {
+            let secs = ms(now_ns - self.start_ns) / 1e3;
+            tracing::info!(
+                "playback: {} video frames in {:.1} s ({:.1} fps); frame median {:.1} ms, p95 {:.1} ms; \
+                 mpv median {:.1} p95 {:.1}; {gpu} (UI over the video)",
+                self.video_frames,
+                secs,
+                f64::from(self.video_frames) / secs.max(0.001),
+                pick(&mut self.video_render_ns, 0.5),
+                pick(&mut self.video_render_ns, 0.95),
+                pick(&mut self.video_ns, 0.5),
+                pick(&mut self.video_ns, 0.95),
+            );
+            return;
+        }
         // Single redraws (a focus change with no animation) say nothing about pacing.
         if self.paced < 30 {
             return;
         }
-        let ms = |ns: i64| ns as f64 / 1e6;
-        let pick = |values: &mut Vec<i64>, q: f64| {
-            values.sort_unstable();
-            ms(values[((values.len() - 1) as f64 * q) as usize])
-        };
-        let (keys, images, image_mean, image_max) = crate::perf::take();
         tracing::info!(
             "frames: {} animated, {} late, {} vsyncs missed; render+swap median {:.1} ms, p95 {:.1} ms, max {:.1} ms; \
-             swap median {:.1} p95 {:.1}; update median {:.1} p95 {:.1}; {} keys; {} images in (mean {:.0} ms, max {:.0} ms)",
+             swap median {:.1} p95 {:.1}; draw median {:.1} p95 {:.1}; update median {:.1} p95 {:.1}; \
+             UI thread: cpu median {:.1} p95 {:.1}, waiting for a core median {:.1} p95 {:.1}, blocked median {:.1} p95 {:.1}; \
+             {gpu}; {} keys; {} images in (mean {:.0} ms, max {:.0} ms)",
             self.paced,
             self.late,
             self.missed,
@@ -438,8 +544,16 @@ impl FrameStats {
             pick(&mut self.render_ns, 1.0),
             pick(&mut self.swap_ns, 0.5),
             pick(&mut self.swap_ns, 0.95),
+            pick(&mut self.draw_ns, 0.5),
+            pick(&mut self.draw_ns, 0.95),
             pick(&mut self.update_ns, 0.5),
             pick(&mut self.update_ns, 0.95),
+            pick(&mut self.cpu_ns, 0.5),
+            pick(&mut self.cpu_ns, 0.95),
+            pick(&mut self.runq_ns, 0.5),
+            pick(&mut self.runq_ns, 0.95),
+            pick(&mut self.blocked_ns, 0.5),
+            pick(&mut self.blocked_ns, 0.95),
             keys,
             images,
             image_mean,
@@ -474,11 +588,13 @@ impl Platform for TvPlatform {
         let mut rendered_seq = 0u64;
         let mut last_render_ns = 0i64;
         let mut stats = FrameStats::default();
+        let clock = ThreadClock::new();
         loop {
             // While frames are flowing, animate to the latest vsync so every
             // frame advances by exactly one refresh, whenever the loop runs.
             let (seq, vsync_ns) = self.vsync.as_ref().map_or((0, 0), Vsync::latest);
             let now_ns = vsync::monotonic_ns();
+            let (cpu_start, runq_start) = clock.sample();
             let fresh = self.vsync.is_some() && vsync_ns > 0 && now_ns - vsync_ns < STALE_VSYNC_NS;
             self.frame_ns.set(fresh.then_some(vsync_ns));
             slint::platform::update_timers_and_animations();
@@ -502,9 +618,20 @@ impl Platform for TvPlatform {
                 rendered_seq = seq;
                 last_render_ns = now_ns;
                 SWAP_NS.with(|s| s.set(0));
+                crate::perf::frame_begin();
                 self.render();
                 let swap_ns = SWAP_NS.with(Cell::get);
-                stats.frame(now_ns, vsync::monotonic_ns() - now_ns, swap_ns, update_ns, skipped);
+                let (cpu_end, runq_end) = clock.sample();
+                stats.frame(FrameSample {
+                    now_ns,
+                    render_ns: vsync::monotonic_ns() - now_ns,
+                    swap_ns,
+                    update_ns,
+                    cpu_ns: cpu_end - cpu_start,
+                    runq_ns: runq_end - runq_start,
+                    marks: crate::perf::frame_marks(),
+                    skipped,
+                });
             }
 
             let pending = self.window.has_surface.get()

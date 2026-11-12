@@ -24,3 +24,5 @@ Build and publish from the main checkout. Its `.local/` holds the release keysto
 ## TV performance
 
 The TV log has a `frames:` line for every 10 s of animation (late frames, missed vsyncs, render+swap ms). The TV runs at 60 Hz, so a frame has 16.7 ms. Read those lines before and after any animation or scrolling change.
+
+Each `frames:` line also splits the UI thread's frame time three ways: `cpu` (running on a core), `waiting for a core` (runnable while other threads had every core), and `blocked` (asleep, mostly inside the GPU driver). It also gives `gpu`, the GPU's time for the UI from GL timer queries. A frame is GPU-bound when `gpu` is near 16.7 ms. It is CPU-bound when `cpu` is near 16.7 ms. Contention from artwork decoding shows up as `waiting for a core`. The `GPU:` line at startup names the GPU and says whether timer queries are available. Video playback gets `playback:` lines instead, because those frames follow the film's frame rate.
