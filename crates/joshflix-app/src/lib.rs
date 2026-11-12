@@ -14,6 +14,7 @@ mod audio_fx;
 mod format;
 mod keyboard;
 mod logsink;
+mod perf;
 pub mod platform;
 mod video;
 

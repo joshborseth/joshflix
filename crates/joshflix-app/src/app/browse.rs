@@ -1,15 +1,24 @@
 //! Home, Movies and Shows: a hero for the focused title over rows of posters.
 
 use std::rc::Rc;
+use std::time::Duration;
 
 use joshflix_core::MediaKind;
 use joshflix_core::cinemeta::{CatalogId, CatalogQuery, MetaPreview, metahub_size};
 use joshflix_core::store::Progress;
 use slint::{Global, Image, Model, ModelRc, VecModel};
 
-use super::{Controller, ImageKind, ImageSlot, Key, OpenTarget, Section, poster, shared};
+use super::{Controller, ImageKind, ImageSlot, Key, OpenTarget, Section, poster, shared, with_controller};
 use crate::format;
 use crate::{BrowseState, Hero, Poster, Row};
+
+/// How long focus must rest before the hero follows it. Swapping the hero
+/// lays out its text and uploads a full-width backdrop to the GPU, which costs
+/// a TV several frames: done on every move, it stuttered the row scroll and
+/// queued decodes for titles already passed. Waiting lets held keys and quick
+/// presses scroll smoothly, and the update lands as the scroll comes to rest
+/// (`Theme.scroll` is 300 ms, nearly settled by now).
+const HERO_SETTLE: Duration = Duration::from_millis(200);
 
 /// Everything shown in the hero for a focused card.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -200,6 +209,8 @@ pub struct BrowseCtl {
     pub show_b: bool,
     /// Until the user moves, keep focus on the first row with content.
     pub user_moved: bool,
+    /// Fires once focus has rested for `HERO_SETTLE`.
+    hero_timer: slint::Timer,
 }
 
 impl BrowseCtl {
@@ -216,6 +227,7 @@ impl BrowseCtl {
             shown_backdrop: None,
             show_b: false,
             user_moved: false,
+            hero_timer: slint::Timer::default(),
         }
     }
 
@@ -388,7 +400,9 @@ impl Controller {
             b.row = first;
         }
         if is_current {
-            self.push_browse_focus(browse);
+            // Rows arrive in a burst at startup: one hero update covers them.
+            self.push_browse_scroll(browse);
+            self.update_hero_later(browse);
             self.load_visible_rows(browse);
         }
     }
@@ -407,12 +421,28 @@ impl Controller {
 
     /// Push focus, scroll and hero for the visible browse section.
     fn push_browse_focus(&mut self, browse: usize) {
+        self.push_browse_scroll(browse);
+        self.update_hero(browse);
+    }
+
+    fn push_browse_scroll(&mut self, browse: usize) {
         let b = &self.browse[browse];
         let state = BrowseState::get(&self.ui);
         state.set_focused_row(b.row as i32);
         let scroll: f32 = b.rows[..b.row.min(b.rows.len())].iter().map(RowCtl::height).sum();
         state.set_scroll_y(scroll);
-        self.update_hero(browse);
+    }
+
+    /// Update the hero once focus rests (see `HERO_SETTLE`).
+    fn update_hero_later(&mut self, browse: usize) {
+        let section = self.browse[browse].section;
+        self.browse[browse].hero_timer.start(slint::TimerMode::SingleShot, HERO_SETTLE, move || {
+            with_controller(|c| {
+                if c.screen == crate::Screen::Browse && c.section == section {
+                    c.update_hero(c.browse_index(section));
+                }
+            });
+        });
     }
 
     fn update_hero(&mut self, browse: usize) {
@@ -540,7 +570,8 @@ impl Controller {
                 }
                 self.browse[browse].row = target as usize;
                 self.browse[browse].user_moved = true;
-                self.push_browse_focus(browse);
+                self.push_browse_scroll(browse);
+                self.update_hero_later(browse);
                 self.load_visible_rows(browse);
             }
             Key::Left | Key::Right => {
@@ -560,7 +591,7 @@ impl Controller {
                 }
                 let data = row.to_row();
                 b.model.set_row_data(row_index, data);
-                self.update_hero(browse);
+                self.update_hero_later(browse);
                 self.load_visible_rows(browse);
             }
             Key::Ok => {

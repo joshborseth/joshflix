@@ -60,6 +60,14 @@ export global Theme {
     out property <length> wide-h: 110px;
     out property <length> card-gap: 12px;
     out property <float> focus-scale: 1.08;
+    // CULL: Slint visits every element of the tree on every frame, including
+    // children of elements that are off screen (children may draw outside
+    // their parent). On a TV CPU, walking all 480 home cards took most of the
+    // 16.7 ms frame. A clipping box whose rectangle is off screen is skipped
+    // with all its children, so cards and rows sit in one. A plain
+    // rectangular clip is only a scissor (no offscreen layer). The padding
+    // leaves room for the focus glow and lift.
+    out property <length> cull-pad: 40px;
 
     // Motion
     out property <duration> fast: 140ms;

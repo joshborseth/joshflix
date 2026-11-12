@@ -10,96 +10,111 @@ export component PosterCard inherits Rectangle {
     width: Theme.poster-w;
     height: Theme.poster-h + (show-title ? 30px : 0px);
 
-    // Focus lift: scales the glow and the artwork together.
+    // Culling box: see CULL.
     Rectangle {
-        x: 0;
-        y: 0;
-        width: parent.width;
-        height: Theme.poster-h;
-        transform-scale: root.focused ? Theme.focus-scale : 1.0;
-        transform-origin: { x: self.width / 2, y: self.height / 2 };
-        animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+        x: -Theme.cull-pad;
+        y: -Theme.cull-pad;
+        width: root.width + 2 * Theme.cull-pad;
+        height: root.height + 2 * Theme.cull-pad;
+        clip: true;
+        Rectangle {
+            x: Theme.cull-pad;
+            y: Theme.cull-pad;
+            width: root.width;
+            height: root.height;
 
-        CardGlow {
-            width: parent.width;
-            height: parent.height;
-            on: root.focused;
-        }
-
-        // No clip: the artwork's corners are rounded when it's decoded
-        // (ImageKind::card_radius). A rounded clip renders each card into its
-        // own offscreen texture, which is what made rows stutter on TVs.
-        art := Rectangle {
-            border-radius: Theme.radius;
-            background: Theme.surface-2;
-
-            if !root.item.has-image: Rectangle {
-                border-radius: Theme.radius;
-                background: @linear-gradient(160deg, Theme.surface-3 0%, Theme.surface 100%);
-                Text {
-                    x: 8px;
-                    width: parent.width - 16px;
-                    text: root.item.title;
-                    color: Theme.text-muted;
-                    font-size: Theme.text-md;
-                    font-weight: 600;
-                    wrap: word-wrap;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
-                }
-            }
-            Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.item.image;
-                image-fit: cover;
-                opacity: root.item.has-image ? 1 : 0;
-                animate opacity { duration: Theme.med; }
-            }
-            if root.item.progress > 0: Rectangle {
-                x: 6px;
-                y: parent.height - 10px;
-                width: parent.width - 12px;
-                height: 4px;
-                border-radius: 2px;
-                background: #000000aa;
-                Rectangle {
-                    x: 0;
-                    width: parent.width * clamp(root.item.progress, 0, 1);
-                    border-radius: 2px;
-                    background: Theme.accent;
-                }
-            }
-            if root.item.badge != "": Rectangle {
-                x: 6px;
-                y: 6px;
-                width: badge-text.preferred-width + 10px;
-                height: 16px;
-                border-radius: 4px;
-                background: Theme.accent;
-                badge-text := Text {
-                    text: root.item.badge;
-                    font-size: Theme.text-xs;
-                    font-weight: 700;
-                    color: white;
-                }
-            }
+            // Focus lift: scales the glow and the artwork together.
             Rectangle {
-                border-radius: Theme.radius;
-                border-width: root.focused ? 2px : 0px;
-                border-color: Theme.accent-light;
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: Theme.poster-h;
+                transform-scale: root.focused ? Theme.focus-scale : 1.0;
+                transform-origin: { x: self.width / 2, y: self.height / 2 };
+                animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+
+                CardGlow {
+                    width: parent.width;
+                    height: parent.height;
+                    on: root.focused;
+                }
+
+                // No clip: the artwork's corners are rounded when it's decoded
+                // (ImageKind::card_radius). A rounded clip renders each card into its
+                // own offscreen texture, which is what made rows stutter on TVs.
+                art := Rectangle {
+                    border-radius: Theme.radius;
+                    background: Theme.surface-2;
+
+                    if !root.item.has-image: Rectangle {
+                        border-radius: Theme.radius;
+                        background: @linear-gradient(160deg, Theme.surface-3 0%, Theme.surface 100%);
+                        Text {
+                            x: 8px;
+                            width: parent.width - 16px;
+                            text: root.item.title;
+                            color: Theme.text-muted;
+                            font-size: Theme.text-md;
+                            font-weight: 600;
+                            wrap: word-wrap;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                        }
+                    }
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.item.image;
+                        image-fit: cover;
+                        opacity: root.item.has-image ? 1 : 0;
+                        animate opacity { duration: Theme.med; }
+                    }
+                    if root.item.progress > 0: Rectangle {
+                        x: 6px;
+                        y: parent.height - 10px;
+                        width: parent.width - 12px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: #000000aa;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * clamp(root.item.progress, 0, 1);
+                            border-radius: 2px;
+                            background: Theme.accent;
+                        }
+                    }
+                    if root.item.badge != "": Rectangle {
+                        x: 6px;
+                        y: 6px;
+                        width: badge-text.preferred-width + 10px;
+                        height: 16px;
+                        border-radius: 4px;
+                        background: Theme.accent;
+                        badge-text := Text {
+                            text: root.item.badge;
+                            font-size: Theme.text-xs;
+                            font-weight: 700;
+                            color: white;
+                        }
+                    }
+                    Rectangle {
+                        border-radius: Theme.radius;
+                        border-width: root.focused ? 2px : 0px;
+                        border-color: Theme.accent-light;
+                    }
+                }
+            }
+
+            if root.show-title: Text {
+                y: Theme.poster-h + 8px;
+                width: parent.width;
+                text: root.item.title;
+                color: root.focused ? Theme.text : Theme.text-muted;
+                font-size: Theme.text-sm;
+                font-weight: 500;
+                overflow: elide;
             }
         }
-    }
-
-    if root.show-title: Text {
-        y: Theme.poster-h + 8px;
-        width: parent.width;
-        text: root.item.title;
-        color: root.focused ? Theme.text : Theme.text-muted;
-        font-size: Theme.text-sm;
-        font-weight: 500;
-        overflow: elide;
     }
 }
 
@@ -110,91 +125,106 @@ export component WideCard inherits Rectangle {
     width: Theme.wide-w;
     height: Theme.wide-h + 34px;
 
-    // Focus lift: scales the glow and the artwork together.
+    // Culling box: see CULL.
     Rectangle {
-        x: 0;
-        y: 0;
-        width: parent.width;
-        height: Theme.wide-h;
-        transform-scale: root.focused ? Theme.focus-scale : 1.0;
-        transform-origin: { x: self.width / 2, y: self.height / 2 };
-        animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+        x: -Theme.cull-pad;
+        y: -Theme.cull-pad;
+        width: root.width + 2 * Theme.cull-pad;
+        height: root.height + 2 * Theme.cull-pad;
+        clip: true;
+        Rectangle {
+            x: Theme.cull-pad;
+            y: Theme.cull-pad;
+            width: root.width;
+            height: root.height;
 
-        CardGlow {
-            width: parent.width;
-            height: parent.height;
-            on: root.focused;
-        }
-
-        // No clip, as in PosterCard: the artwork has rounded corners baked in.
-        art := Rectangle {
-            border-radius: Theme.radius;
-            background: Theme.surface-2;
-
-            Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.item.image;
-                image-fit: cover;
-                opacity: root.item.has-image ? 1 : 0;
-                animate opacity { duration: Theme.med; }
-            }
+            // Focus lift: scales the glow and the artwork together.
             Rectangle {
-                border-radius: Theme.radius;
-                background: @linear-gradient(180deg, #00000000 45%, #000000cc 100%);
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: Theme.wide-h;
+                transform-scale: root.focused ? Theme.focus-scale : 1.0;
+                transform-origin: { x: self.width / 2, y: self.height / 2 };
+                animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+
+                CardGlow {
+                    width: parent.width;
+                    height: parent.height;
+                    on: root.focused;
+                }
+
+                // No clip, as in PosterCard: the artwork has rounded corners baked in.
+                art := Rectangle {
+                    border-radius: Theme.radius;
+                    background: Theme.surface-2;
+
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.item.image;
+                        image-fit: cover;
+                        opacity: root.item.has-image ? 1 : 0;
+                        animate opacity { duration: Theme.med; }
+                    }
+                    Rectangle {
+                        border-radius: Theme.radius;
+                        background: @linear-gradient(180deg, #00000000 45%, #000000cc 100%);
+                    }
+                    Text {
+                        x: 10px;
+                        y: parent.height - 30px;
+                        width: parent.width - 20px;
+                        text: root.item.title;
+                        color: Theme.text;
+                        font-size: Theme.text-md;
+                        font-weight: 700;
+                        overflow: elide;
+                    }
+                    if root.item.badge != "": Rectangle {
+                        x: 8px;
+                        y: 8px;
+                        width: wide-badge.preferred-width + 10px;
+                        height: 16px;
+                        border-radius: 4px;
+                        background: Theme.accent;
+                        wide-badge := Text {
+                            text: root.item.badge;
+                            font-size: Theme.text-xs;
+                            font-weight: 700;
+                            color: white;
+                        }
+                    }
+                    if root.item.progress > 0: Rectangle {
+                        x: 10px;
+                        y: parent.height - 8px;
+                        width: parent.width - 20px;
+                        height: 3px;
+                        border-radius: 1.5px;
+                        background: #ffffff33;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * clamp(root.item.progress, 0, 1);
+                            border-radius: 1.5px;
+                            background: Theme.accent;
+                        }
+                    }
+                    Rectangle {
+                        border-radius: Theme.radius;
+                        border-width: root.focused ? 2px : 0px;
+                        border-color: Theme.accent-light;
+                    }
+                }
             }
             Text {
-                x: 10px;
-                y: parent.height - 30px;
-                width: parent.width - 20px;
-                text: root.item.title;
-                color: Theme.text;
-                font-size: Theme.text-md;
-                font-weight: 700;
+                y: Theme.wide-h + 8px;
+                width: parent.width;
+                text: root.item.subtitle;
+                color: root.focused ? Theme.text : Theme.text-muted;
+                font-size: Theme.text-sm;
                 overflow: elide;
             }
-            if root.item.badge != "": Rectangle {
-                x: 8px;
-                y: 8px;
-                width: wide-badge.preferred-width + 10px;
-                height: 16px;
-                border-radius: 4px;
-                background: Theme.accent;
-                wide-badge := Text {
-                    text: root.item.badge;
-                    font-size: Theme.text-xs;
-                    font-weight: 700;
-                    color: white;
-                }
-            }
-            if root.item.progress > 0: Rectangle {
-                x: 10px;
-                y: parent.height - 8px;
-                width: parent.width - 20px;
-                height: 3px;
-                border-radius: 1.5px;
-                background: #ffffff33;
-                Rectangle {
-                    x: 0;
-                    width: parent.width * clamp(root.item.progress, 0, 1);
-                    border-radius: 1.5px;
-                    background: Theme.accent;
-                }
-            }
-            Rectangle {
-                border-radius: Theme.radius;
-                border-width: root.focused ? 2px : 0px;
-                border-color: Theme.accent-light;
-            }
         }
-    }
-    Text {
-        y: Theme.wide-h + 8px;
-        width: parent.width;
-        text: root.item.subtitle;
-        color: root.focused ? Theme.text : Theme.text-muted;
-        font-size: Theme.text-sm;
-        overflow: elide;
     }
 }
 
@@ -209,54 +239,65 @@ export component PosterRow inherits Rectangle {
     preferred-height: data.hidden ? 0px : 26px + card-h + 18px;
     visible: !data.hidden;
 
-    Text {
-        x: root.left-pad;
-        y: 0;
-        text: root.data.title;
-        color: root.active ? Theme.text : Theme.text-muted;
-        font-size: Theme.text-lg;
-        font-weight: 700;
-        animate color { duration: Theme.fast; }
-    }
+    // Culling box: see CULL. Rows scrolled out of view cost one element.
+    Rectangle {
+        y: -Theme.cull-pad;
+        height: root.height + 2 * Theme.cull-pad;
+        clip: true;
+        Rectangle {
+            y: Theme.cull-pad;
+            height: root.height;
 
-    if root.data.loading: HorizontalLayout {
-        x: root.left-pad;
-        y: 28px;
-        spacing: Theme.card-gap;
-        for i in 7: Rectangle {
-            width: root.card-w;
-            height: root.data.wide ? Theme.wide-h : Theme.poster-h;
-            border-radius: Theme.radius;
-            background: Theme.surface;
-        }
-    }
-
-    if !root.data.loading && root.data.items.length == 0: Text {
-        x: root.left-pad;
-        y: 40px;
-        text: root.data.empty-text;
-        color: Theme.text-faint;
-        font-size: Theme.text-md;
-    }
-
-    strip := Rectangle {
-        x: root.left-pad - root.data.focused-col * (root.card-w + Theme.card-gap);
-        y: 28px;
-        width: root.data.items.length * (root.card-w + Theme.card-gap);
-        height: root.card-h;
-        animate x { duration: Theme.scroll; easing: cubic-bezier(0.2, 0.6, 0.3, 1); }
-
-        for item[i] in root.data.items: Rectangle {
-            x: i * (root.card-w + Theme.card-gap);
-            width: root.card-w;
-            height: root.card-h;
-            if root.data.wide: WideCard {
-                item: item;
-                focused: root.active && i == root.data.focused-col;
+            Text {
+                x: root.left-pad;
+                y: 0;
+                text: root.data.title;
+                color: root.active ? Theme.text : Theme.text-muted;
+                font-size: Theme.text-lg;
+                font-weight: 700;
+                animate color { duration: Theme.fast; }
             }
-            if !root.data.wide: PosterCard {
-                item: item;
-                focused: root.active && i == root.data.focused-col;
+
+            if root.data.loading: HorizontalLayout {
+                x: root.left-pad;
+                y: 28px;
+                spacing: Theme.card-gap;
+                for i in 7: Rectangle {
+                    width: root.card-w;
+                    height: root.data.wide ? Theme.wide-h : Theme.poster-h;
+                    border-radius: Theme.radius;
+                    background: Theme.surface;
+                }
+            }
+
+            if !root.data.loading && root.data.items.length == 0: Text {
+                x: root.left-pad;
+                y: 40px;
+                text: root.data.empty-text;
+                color: Theme.text-faint;
+                font-size: Theme.text-md;
+            }
+
+            strip := Rectangle {
+                x: root.left-pad - root.data.focused-col * (root.card-w + Theme.card-gap);
+                y: 28px;
+                width: root.data.items.length * (root.card-w + Theme.card-gap);
+                height: root.card-h;
+                animate x { duration: Theme.scroll; easing: cubic-bezier(0.2, 0.6, 0.3, 1); }
+
+                for item[i] in root.data.items: Rectangle {
+                    x: i * (root.card-w + Theme.card-gap);
+                    width: root.card-w;
+                    height: root.card-h;
+                    if root.data.wide: WideCard {
+                        item: item;
+                        focused: root.active && i == root.data.focused-col;
+                    }
+                    if !root.data.wide: PosterCard {
+                        item: item;
+                        focused: root.active && i == root.data.focused-col;
+                    }
+                }
             }
         }
     }

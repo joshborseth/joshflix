@@ -125,10 +125,12 @@ impl ImageCache {
         self.rt.spawn(async move {
             let result: Option<Pixels> = async {
                 let _permit = limit.acquire().await.ok()?;
+                let started = std::time::Instant::now();
                 let decoded = match radius {
                     Some(radius) => loader.load_card(&url, w, h, radius).await.ok()?,
                     None => loader.load(&url, w, h).await.ok()?,
                 };
+                crate::perf::image_loaded(started.elapsed().as_nanos() as u64);
                 Some(SharedPixelBuffer::clone_from_slice(&decoded.rgba, decoded.width, decoded.height))
             }
             .await;

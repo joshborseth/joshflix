@@ -35,6 +35,9 @@ type Job = Box<dyn FnOnce() + Send>;
 thread_local! {
     /// Set by the UI's key callback so the loop knows whether a key was used.
     static KEY_HANDLED: Cell<Option<bool>> = const { Cell::new(None) };
+    /// Time spent in eglSwapBuffers since the loop last read it. Swap blocks
+    /// when the GPU is behind, so it separates GPU-bound from CPU-bound frames.
+    static SWAP_NS: Cell<i64> = const { Cell::new(0) };
 }
 
 /// Record whether the controller handled the key being dispatched.
@@ -59,7 +62,10 @@ unsafe impl i_slint_renderer_femtovg::opengl::OpenGLInterface for Egl {
     }
 
     fn swap_buffers(&self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
-        self.surface.swap_buffers(&self.context)?;
+        let start = vsync::monotonic_ns();
+        let result = self.surface.swap_buffers(&self.context);
+        SWAP_NS.with(|s| s.set(s.get() + vsync::monotonic_ns() - start));
+        result?;
         Ok(())
     }
 
@@ -322,6 +328,9 @@ impl TvPlatform {
         let is_back = code == Keycode::Back || code == Keycode::Escape || code == Keycode::ButtonB;
 
         KEY_HANDLED.with(|k| k.set(None));
+        if down {
+            crate::perf::key();
+        }
         let event = if up {
             WindowEvent::KeyReleased { text }
         } else if key.repeat_count() > 0 {
@@ -377,16 +386,25 @@ struct FrameStats {
     missed: u64,
     /// Frames that missed at least one vsync.
     late: u32,
+    /// Whole frame: Slint's update, drawing and the buffer swap.
     render_ns: Vec<i64>,
+    /// The buffer swap alone.
+    swap_ns: Vec<i64>,
+    /// Slint's timers, animations and property updates before drawing.
+    update_ns: Vec<i64>,
 }
 
 impl FrameStats {
-    fn frame(&mut self, now_ns: i64, render_ns: i64, skipped: Option<u64>) {
+    fn frame(&mut self, now_ns: i64, render_ns: i64, swap_ns: i64, update_ns: i64, skipped: Option<u64>) {
         if self.frames == 0 {
             self.start_ns = now_ns;
+            // Counters cover this window only.
+            let _ = crate::perf::take();
         }
         self.frames += 1;
         self.render_ns.push(render_ns);
+        self.swap_ns.push(swap_ns);
+        self.update_ns.push(update_ns);
         if let Some(skipped) = skipped {
             self.paced += 1;
             self.missed += skipped;
@@ -403,17 +421,29 @@ impl FrameStats {
         if self.paced < 30 {
             return;
         }
-        self.render_ns.sort_unstable();
         let ms = |ns: i64| ns as f64 / 1e6;
-        let pick = |q: f64| self.render_ns[((self.render_ns.len() - 1) as f64 * q) as usize];
+        let pick = |values: &mut Vec<i64>, q: f64| {
+            values.sort_unstable();
+            ms(values[((values.len() - 1) as f64 * q) as usize])
+        };
+        let (keys, images, image_mean, image_max) = crate::perf::take();
         tracing::info!(
-            "frames: {} animated, {} late, {} vsyncs missed; render+swap median {:.1} ms, p95 {:.1} ms, max {:.1} ms",
+            "frames: {} animated, {} late, {} vsyncs missed; render+swap median {:.1} ms, p95 {:.1} ms, max {:.1} ms; \
+             swap median {:.1} p95 {:.1}; update median {:.1} p95 {:.1}; {} keys; {} images in (mean {:.0} ms, max {:.0} ms)",
             self.paced,
             self.late,
             self.missed,
-            ms(pick(0.5)),
-            ms(pick(0.95)),
-            ms(pick(1.0)),
+            pick(&mut self.render_ns, 0.5),
+            pick(&mut self.render_ns, 0.95),
+            pick(&mut self.render_ns, 1.0),
+            pick(&mut self.swap_ns, 0.5),
+            pick(&mut self.swap_ns, 0.95),
+            pick(&mut self.update_ns, 0.5),
+            pick(&mut self.update_ns, 0.95),
+            keys,
+            images,
+            image_mean,
+            image_max,
         );
     }
 }
@@ -453,6 +483,7 @@ impl Platform for TvPlatform {
             self.frame_ns.set(fresh.then_some(vsync_ns));
             slint::platform::update_timers_and_animations();
             self.frame_ns.set(None);
+            let update_ns = vsync::monotonic_ns() - now_ns;
 
             // Nothing to draw on while backgrounded: init_surface() asks for a redraw on return.
             let wants_frame = self.window.has_surface.get()
@@ -470,8 +501,10 @@ impl Platform for TvPlatform {
                     .then(|| seq.saturating_sub(rendered_seq).saturating_sub(1));
                 rendered_seq = seq;
                 last_render_ns = now_ns;
+                SWAP_NS.with(|s| s.set(0));
                 self.render();
-                stats.frame(now_ns, vsync::monotonic_ns() - now_ns, skipped);
+                let swap_ns = SWAP_NS.with(Cell::get);
+                stats.frame(now_ns, vsync::monotonic_ns() - now_ns, swap_ns, update_ns, skipped);
             }
 
             let pending = self.window.has_surface.get()
