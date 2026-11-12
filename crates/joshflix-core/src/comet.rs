@@ -71,7 +71,8 @@ impl Comet {
         );
         let response: RawResponse = self.http.get_json(SERVICE, &url).await?;
         let mut result = CometResult::default();
-        for raw in response.streams {
+        // Decode each stream on its own: one odd entry must not hide the rest.
+        for raw in response.streams.into_iter().filter_map(|value| serde_json::from_value::<RawStream>(value).ok()) {
             match raw.into_source() {
                 Parsed::Source(source) => result.sources.push(*source),
                 Parsed::Notice(notice) => result.notices.push(notice),
@@ -150,7 +151,7 @@ enum Parsed {
 #[derive(Deserialize)]
 struct RawResponse {
     #[serde(default)]
-    streams: Vec<RawStream>,
+    streams: Vec<serde_json::Value>,
 }
 
 #[derive(Deserialize, Default)]
@@ -174,8 +175,9 @@ struct RawHints {
     #[serde(rename = "bingeGroup")]
     binge_group: Option<String>,
     filename: Option<String>,
+    /// Comet sends -1 when it doesn't know the size.
     #[serde(rename = "videoSize")]
-    video_size: Option<u64>,
+    video_size: Option<i64>,
 }
 
 impl RawStream {
@@ -187,18 +189,16 @@ impl RawStream {
             return Parsed::Notice(message.to_owned());
         }
         let url = self.url.filter(|u| !u.is_empty());
-        let info_hash = self
-            .info_hash
-            .or_else(|| url.as_deref().and_then(hash_from_playback_url))
-            .or_else(|| {
-                self.behavior_hints
-                    .binge_group
-                    .as_deref()
-                    .and_then(|g| g.rsplit('|').next())
-                    .map(str::to_owned)
-            })
-            .map(|h| h.to_ascii_lowercase());
-        let Some(info_hash) = info_hash.filter(|h| h.len() == 40 && h.bytes().all(|b| b.is_ascii_hexdigit())) else {
+        // Comet has moved the hash around between versions: try every place it
+        // has lived and keep the first that really is one. Current ElfHosted
+        // playback URLs are `/playback/{config}/{encrypted}`, with no hash.
+        let binge_hash = self.behavior_hints.binge_group.as_deref().and_then(|g| g.rsplit('|').next());
+        let Some(info_hash) = [self.info_hash.as_deref(), binge_hash, url.as_deref().and_then(hash_from_playback_url)]
+            .into_iter()
+            .flatten()
+            .find(|h| is_info_hash(h))
+            .map(str::to_ascii_lowercase)
+        else {
             return Parsed::Skip;
         };
         let cached = self.name.contains('⚡');
@@ -209,7 +209,7 @@ impl RawStream {
             &self.name,
             &description,
             self.behavior_hints.filename.as_deref(),
-            self.behavior_hints.video_size,
+            self.behavior_hints.video_size.and_then(|size| u64::try_from(size).ok()).filter(|&size| size > 0),
         );
         Parsed::Source(Box::new(Source {
             info_hash,
@@ -231,12 +231,22 @@ fn playback_segments(url: &str) -> Option<Vec<&str>> {
     Some(rest.split('/').collect())
 }
 
-fn hash_from_playback_url(url: &str) -> Option<String> {
-    playback_segments(url)?.first().map(|s| (*s).to_owned())
+fn is_info_hash(value: &str) -> bool {
+    value.len() == 40 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// Only the older `/playback/{hash}/…` layout carries the hash.
+fn hash_from_playback_url(url: &str) -> Option<&str> {
+    playback_segments(url)?.first().copied().filter(|s| is_info_hash(s))
+}
+
+/// The file index only exists in the older layout, after the hash.
 fn file_index_from_playback_url(url: &str) -> Option<u32> {
-    playback_segments(url)?.get(2)?.parse().ok()
+    let segments = playback_segments(url)?;
+    if !is_info_hash(segments.first()?) {
+        return None;
+    }
+    segments.get(2)?.parse().ok()
 }
 
 #[cfg(test)]
@@ -270,7 +280,7 @@ mod tests {
     #[test]
     fn parses_sources_and_notices() {
         let raw: RawResponse = serde_json::from_str(SAMPLE).unwrap();
-        let parsed: Vec<Parsed> = raw.streams.into_iter().map(RawStream::into_source).collect();
+        let parsed: Vec<Parsed> = raw.streams.into_iter().map(|v| serde_json::from_value::<RawStream>(v).unwrap().into_source()).collect();
         let Parsed::Source(cached) = &parsed[0] else { panic!("expected source") };
         assert!(cached.cached);
         assert_eq!(cached.info_hash, "cc404febe5fb876f1970acd4e64db3ac1d01fc90");
@@ -283,6 +293,23 @@ mod tests {
         assert_eq!(uncached.release.seeders, Some(900));
         let Parsed::Notice(notice) = &parsed[2] else { panic!("expected notice") };
         assert_eq!(notice, "realdebrid: Invalid API key.");
+    }
+
+    /// Current ElfHosted layout: `/playback/{config}/{encrypted…}` with the
+    /// hash only in `bingeGroup`. Every source used to be dropped here.
+    #[test]
+    fn parses_current_elfhosted_playback_urls() {
+        let raw: RawResponse = serde_json::from_str(r#"{"streams":[
+          {"name":"[RD⚡] Comet 2160p","description":"📄 The.Shawshank.Redemption.1994.2160p.UHD.Remux.DV.HDR.HEVC.DTS-HD.MA.5.1-OzONE.mkv\n👤 1 💾 53.8 GB 🔎 TheRARBG",
+           "behaviorHints":{"bingeGroup":"comet|realdebrid|58B0E410B2588CFC4C5298F59C12EC93A8A123CE","filename":"Shawshank.mkv","videoSize":-1},
+           "url":"https://comet.example/playback/T_RNsdrmkDAqAOKm/BXLgdBhGP-W2kMgd/12345/sgzo6oTH6w0qWSdO"}
+        ]}"#).unwrap();
+        let stream: RawStream = serde_json::from_value(raw.streams.into_iter().next().unwrap()).unwrap();
+        let Parsed::Source(source) = stream.into_source() else { panic!("expected source") };
+        assert_eq!(source.info_hash, "58b0e410b2588cfc4c5298f59c12ec93a8a123ce");
+        assert_eq!(source.file_idx, None, "no file index in the encrypted layout");
+        assert!(source.cached);
+        assert!(source.playback_url.is_some());
     }
 
     async fn fake_streams() -> impl IntoResponse {
