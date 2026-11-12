@@ -136,6 +136,8 @@ pub enum PlayerEvent {
     /// Container or estimated frame rate.
     FrameRate(f64),
     VideoSize { width: i64, height: i64 },
+    /// Seconds of media buffered ahead of the playhead.
+    CacheAhead(f64),
     Ended(EndReason),
     Log { level: String, text: String },
 }
@@ -152,6 +154,7 @@ const OBS_WIDTH: u64 = 8;
 const OBS_HEIGHT: u64 = 9;
 const OBS_EOF: u64 = 10;
 const OBS_SELECTION: u64 = 11;
+const OBS_CACHE_AHEAD: u64 = 12;
 
 struct Inner {
     mpv: Mpv,
@@ -398,6 +401,7 @@ impl Player {
             (OBS_EOF, "eof-reached", MPV_FORMAT_FLAG),
             (OBS_SELECTION, "sid", MPV_FORMAT_NONE),
             (OBS_SELECTION, "aid", MPV_FORMAT_NONE),
+            (OBS_CACHE_AHEAD, "demuxer-cache-duration", MPV_FORMAT_DOUBLE),
         ];
         for (id, name, format) in observe {
             let name = cstring(name);
@@ -600,6 +604,7 @@ fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &
                     (OBS_PAUSED_FOR_CACHE, _, _, Some(false)) => PlayerEvent::Buffering(None),
                     (OBS_CACHE_STATE, _, Some(v), _) if v < 100 => PlayerEvent::Buffering(Some(v)),
                     (OBS_FPS, Some(v), _, _) => PlayerEvent::FrameRate(v),
+                    (OBS_CACHE_AHEAD, Some(v), _, _) => PlayerEvent::CacheAhead(v),
                     (OBS_WIDTH, _, Some(w), _) => PlayerEvent::VideoSize { width: w, height: 0 },
                     (OBS_HEIGHT, _, Some(h), _) => PlayerEvent::VideoSize { width: 0, height: h },
                     (OBS_EOF, _, _, Some(true)) => PlayerEvent::Ended(EndReason::Eof),

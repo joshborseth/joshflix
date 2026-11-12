@@ -309,7 +309,8 @@ impl TvPlatform {
         self.window.needs_redraw.set(true);
         let handled = KEY_HANDLED.with(Cell::get);
 
-        if is_back && down && handled == Some(false) {
+        // Holding Back must not walk out of the app: only a fresh press can finish it.
+        if is_back && down && key.repeat_count() == 0 && handled == Some(false) {
             // Back on the top level: leave the app like any Android TV app.
             self.finish_activity();
         }

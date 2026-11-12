@@ -400,16 +400,36 @@ impl Controller {
         self.spawn(async move { updater.download(&update, &dir, progress, cancel_rx).await }, |c, result| {
             SettingsState::get(&c.ui).set_busy_progress(-1.0);
             c.settings_ctl.downloading = None;
-            match result.map_err(|e| e.to_string()).and_then(|path| c.platform.install_apk(&path)) {
-                Ok(()) => c.settings_ctl.update_status = "Installing…".into(),
-                Err(e) => {
-                    c.settings_ctl.update_status = "Update failed".into();
-                    c.toast(&e);
+            match result {
+                Ok(path) => {
+                    c.settings_ctl.update_status = "Opening the installer…".into();
+                    c.platform.install_apk(
+                        &path,
+                        Box::new(|outcome| {
+                            let _ = slint::invoke_from_event_loop(move || {
+                                super::with_controller(|c| c.on_install_result(outcome));
+                            });
+                        }),
+                    );
                 }
+                Err(e) => c.on_install_result(Err(e.to_string())),
             }
             if c.screen == crate::Screen::Settings {
                 c.build_settings();
             }
         });
+    }
+
+    fn on_install_result(&mut self, outcome: Result<(), String>) {
+        match outcome {
+            Ok(()) => self.settings_ctl.update_status = "Installing…".into(),
+            Err(e) => {
+                self.settings_ctl.update_status = "Update failed".into();
+                self.toast(&e);
+            }
+        }
+        if self.screen == crate::Screen::Settings {
+            self.build_settings();
+        }
     }
 }

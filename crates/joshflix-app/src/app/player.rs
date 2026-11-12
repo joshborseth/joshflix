@@ -66,6 +66,10 @@ pub struct PlayerCtl {
     loaded_at: Option<Instant>,
     /// mpv reported PLAYBACK_RESTART (the first frame is up) for this file.
     started: bool,
+    /// Seconds buffered ahead (tells a stalled decoder from a slow network).
+    cache_ahead: f64,
+    /// Next-episode lookup in flight.
+    autoplay_pending: bool,
     hwdec_fallback: bool,
     /// Last overlay visibility pushed to mpv (to lift subtitles above the controls).
     overlay_shown: Option<bool>,
@@ -125,6 +129,8 @@ impl Controller {
             subtitles_on: false,
             loaded_at: None,
             started: false,
+            cache_ahead: 0.0,
+            autoplay_pending: false,
             hwdec_fallback: false,
             overlay_shown: None,
             night,
@@ -190,7 +196,11 @@ impl Controller {
         }
     }
 
-    pub fn on_player_event(&mut self, event: PlayerEvent) {
+    pub fn on_player_event(&mut self, instance: u64, event: PlayerEvent) {
+        // Events from an abandoned (replaced) mpv instance must not touch this session.
+        if instance != self.video.current_id() {
+            return;
+        }
         if let PlayerEvent::Log { level, text } = &event {
             match level.as_str() {
                 "error" | "fatal" => tracing::error!("mpv: {text}"),
@@ -211,9 +221,25 @@ impl Controller {
             PlayerEvent::Started => {
                 p.buffering = None;
                 p.started = true;
+                // Compatibility mode proved itself: remember it for this TV.
+                if self.pending_compat_save {
+                    self.pending_compat_save = false;
+                    self.save_settings(|s| s.video_compat_mode = Some(true));
+                }
             }
-            PlayerEvent::Position(pos) => p.position = pos,
-            PlayerEvent::Duration(d) => p.duration = d,
+            // High-frequency updates: just record them; the 250 ms tick redraws.
+            PlayerEvent::Position(pos) => {
+                p.position = pos;
+                return;
+            }
+            PlayerEvent::Duration(d) => {
+                p.duration = d;
+                return;
+            }
+            PlayerEvent::CacheAhead(secs) => {
+                p.cache_ahead = secs;
+                return;
+            }
             PlayerEvent::Paused(paused) => {
                 p.paused = paused;
                 if paused {
@@ -235,11 +261,20 @@ impl Controller {
                 }
             }
             PlayerEvent::Ended(EndReason::Eof) => {
-                if !p.finished {
+                // A dropped connection also ends the file; only call it finished near the end.
+                let near_end = p.duration > 0.0
+                    && (p.position >= p.duration * joshflix_core::store::WATCHED_FRACTION || p.duration - p.position < 90.0);
+                if !near_end {
+                    p.error = Some("The stream ended early (the connection dropped). Press Back and play again to resume.".into());
+                    p.buffering = None;
+                    self.save_progress(false);
+                } else if !p.finished {
                     p.finished = true;
                     self.on_finished();
+                    return;
+                } else {
+                    return;
                 }
-                return;
             }
             PlayerEvent::Ended(EndReason::Error(message)) => {
                 p.error = Some(format!("Playback failed: {message}. Press Back and try another source."));
@@ -270,6 +305,10 @@ impl Controller {
 
     /// Apply the subtitle preference once the track list includes the subtitles we added.
     fn choose_subtitle(&mut self) {
+        self.choose_subtitle_now(false);
+    }
+
+    fn choose_subtitle_now(&mut self, force: bool) {
         let Some(p) = self.player.as_mut() else { return };
         if !p.subtitle_choice_pending {
             return;
@@ -279,7 +318,7 @@ impl Controller {
         if tracks.is_empty() {
             return;
         }
-        let expected = if p.subtitles_added { p.subtitles.len() } else { 0 };
+        let expected = if p.subtitles_added && !force { p.subtitles.len() } else { 0 };
         let external = tracks.iter().filter(|t| t.kind == TrackKind::Subtitle && t.external).count();
         if external < expected {
             return; // more OpenSubtitles tracks still loading
@@ -381,13 +420,21 @@ impl Controller {
 
     pub(super) fn player_tick(&mut self) {
         let Some(p) = self.player.as_mut() else { return };
+        if p.subtitle_choice_pending && p.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(6)) {
+            // Some OpenSubtitles downloads never arrive; apply the preference anyway.
+            self.choose_subtitle_now(true);
+        }
+        let Some(p) = self.player.as_mut() else { return };
         // Some TV/emulator drivers accept MediaCodec's zero-copy output but never
-        // deliver frames. If nothing has played 6 s after loading, switch to the
-        // copy-back path, which works everywhere (mpv reinitializes the decoder).
+        // deliver frames. If 8 s after loading nothing has played although 5 s of
+        // media is buffered (so it isn't the network), continue on a new mpv
+        // instance in copy-back mode, which works everywhere.
         if cfg!(target_os = "android")
+            && !self.video.is_compat()
             && !p.hwdec_fallback
             && !p.paused
             && !p.started
+            && p.cache_ahead >= 5.0
             && p.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(8))
         {
             p.hwdec_fallback = true;
@@ -459,33 +506,40 @@ impl Controller {
             last_source: Some(LastSource { stream: p.source.clone() }),
         };
         let watched = progress.is_watched();
-        if let Err(e) = self.svc.store.save_progress(progress) {
-            tracing::warn!("save progress: {e}");
-        }
         // Queue the next episode for Continue Watching.
-        if watched
-            && let Some(next) = p.next.request.as_ref()
-            && self.svc.store.progress(&next.video).ok().flatten().is_none_or(|existing| existing.up_next)
-        {
-            std::thread::sleep(Duration::from_millis(2)); // keep it newer than the finished one
-            let _ = self.svc.store.save_progress(Progress {
-                video: next.video.clone(),
-                name: next.context.name.clone(),
-                episode_title: next.context.episode_title.clone(),
-                poster: next.context.poster.clone(),
-                background: next.context.background.clone(),
-                thumbnail: next.context.thumbnail.clone(),
-                logo: next.context.logo.clone(),
-                position_secs: 0.0,
-                duration_secs: 0.0,
-                updated_at: 0,
-                up_next: true,
-                last_source: None,
-            });
-        }
+        let up_next = p.next.request.as_ref().filter(|_| watched).map(|next| Progress {
+            video: next.video.clone(),
+            name: next.context.name.clone(),
+            episode_title: next.context.episode_title.clone(),
+            poster: next.context.poster.clone(),
+            background: next.context.background.clone(),
+            thumbnail: next.context.thumbnail.clone(),
+            logo: next.context.logo.clone(),
+            position_secs: 0.0,
+            duration_secs: 0.0,
+            updated_at: 0,
+            up_next: true,
+            last_source: None,
+        });
+        // Database writes fsync; keep them off the thread that renders video.
+        let store = self.svc.store.clone();
+        self.rt.spawn_blocking(move || {
+            if let Err(e) = store.save_progress(progress) {
+                tracing::warn!("save progress: {e}");
+            }
+            if let Some(next) = up_next
+                && store.progress(&next.video).ok().flatten().is_none_or(|existing| existing.up_next)
+            {
+                std::thread::sleep(Duration::from_millis(2)); // keep it newer than the finished one
+                let _ = store.save_progress(next);
+            }
+        });
     }
 
     fn on_finished(&mut self) {
+        if self.player.as_ref().is_some_and(|p| p.autoplay_pending) {
+            return; // the next episode is already being looked up
+        }
         self.save_progress(true);
         let autoplay = self.settings.autoplay_next;
         let has_next = self.player.as_ref().is_some_and(|p| p.next.request.is_some() && !p.next.dismissed);
@@ -498,7 +552,9 @@ impl Controller {
 
     /// Stop mpv and forget the session.
     pub fn stop_playback(&mut self, save: bool) {
-        if save {
+        self.autoplay_generation += 1; // drop any in-flight next-episode lookup
+        // A finished episode was already saved as watched; don't overwrite it.
+        if save && self.player.as_ref().is_some_and(|p| !p.finished) {
             self.save_progress(false);
         }
         if let Some(player) = self.video.player() {
@@ -519,10 +575,17 @@ impl Controller {
 
     fn play_next(&mut self) {
         let Some(p) = self.player.as_mut() else { return };
+        if p.autoplay_pending {
+            return;
+        }
         let Some(request) = p.next.request.clone() else { return };
         p.next.countdown_from = None;
+        p.autoplay_pending = true;
         let previous = p.source.clone();
         self.save_progress(true);
+        if let Some(p) = self.player.as_mut() {
+            p.finished = true;
+        }
         self.autoplay(request, previous);
     }
 
@@ -537,7 +600,13 @@ impl Controller {
             p.error = None;
         }
         PlayerState::get(&self.ui).set_buffering_text("Finding the next episode…".into());
+        self.autoplay_generation += 1;
+        let generation = self.autoplay_generation;
         self.spawn(async move { comet.streams(&video).await }, move |c, result| {
+            // The user left the player (or another lookup started) meanwhile.
+            if c.autoplay_generation != generation || c.player.is_none() || c.screen != Screen::Player {
+                return;
+            }
             let pick = result.ok().and_then(|r| {
                 let ranked = RankedSources::rank(r.sources, &filters, &caps);
                 pick_for_binge(&ranked, Some(&previous)).cloned()
@@ -585,10 +654,11 @@ impl Controller {
     /// continue on a fresh mpv instance (the stalled one can't be stopped).
     fn recover_with_compat_mode(&mut self) {
         let Some(p) = self.player.take() else { return };
-        self.save_settings(|s| s.video_compat_mode = Some(true));
+        // Saved once compatibility mode actually shows frames (see Started).
+        self.pending_compat_save = true;
         match crate::video::VideoHost::create_player(true) {
             Ok(player) => {
-                self.video.replace_player(player);
+                self.video.replace_player(player, true);
                 let mut request = p.request.clone();
                 request.resume_at = Some(p.position.max(p.request.resume_at.unwrap_or(0.0)));
                 self.toast("Switched to compatibility video mode for this TV");
@@ -633,7 +703,7 @@ impl Controller {
             Key::FastForward | Key::Rewind => {
                 let step = if key == Key::FastForward { 30.0 } else { -10.0 };
                 let base = p.seek_target.unwrap_or(p.position);
-                let max = if p.duration > 0.0 { p.duration - 1.0 } else { f64::MAX };
+                let max = if p.duration > 0.0 { (p.duration - 1.0).max(0.0) } else { f64::MAX };
                 p.seek_target = Some((base + step).clamp(0.0, max));
                 p.seek_commit_at = Some(Instant::now() + Duration::from_millis(650));
                 p.zone = 0;
@@ -733,7 +803,7 @@ impl Controller {
                     (_, true) => 30.0,
                 };
                 let base = p.seek_target.unwrap_or(p.position);
-                let max = if p.duration > 0.0 { p.duration - 1.0 } else { f64::MAX };
+                let max = if p.duration > 0.0 { (p.duration - 1.0).max(0.0) } else { f64::MAX };
                 p.seek_target = Some((base + step).clamp(0.0, max));
                 p.seek_commit_at = Some(Instant::now() + Duration::from_millis(650));
             }

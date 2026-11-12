@@ -199,7 +199,7 @@ impl RealDebrid {
             }
             sleep_or_cancel(Duration::from_secs(1), &cancel).await?;
             waited += 1;
-            info = self.torrent_info(&torrent_id).await?;
+            info = self.poll_info(&torrent_id, &cancel).await?;
         }
 
         let file = pick_file(&info.files, stream, video).ok_or_else(|| {
@@ -233,17 +233,21 @@ impl RealDebrid {
         progress: &(dyn Fn(ResolveProgress) + Send + Sync),
         cancel: watch::Receiver<bool>,
     ) -> Result<ResolvedStream> {
-        let mut info = self.torrent_info(torrent_id).await?;
-        if info.status == "waiting_files_selection" {
-            self.post_empty(
-                &format!("/torrents/selectFiles/{torrent_id}"),
-                &[("files", file_id.to_string())],
-            )
-            .await?;
-            info = self.torrent_info(torrent_id).await?;
-        }
+        let mut info = self.poll_info(torrent_id, &cancel).await?;
+        let mut selected_files = false;
         loop {
             check_cancel(&cancel)?;
+            // A freshly added magnet goes magnet_conversion → waiting_files_selection; select then.
+            if info.status == "waiting_files_selection" && !selected_files {
+                self.post_empty(
+                    &format!("/torrents/selectFiles/{torrent_id}"),
+                    &[("files", file_id.to_string())],
+                )
+                .await?;
+                selected_files = true;
+                info = self.poll_info(torrent_id, &cancel).await?;
+                continue;
+            }
             if info.status == "downloaded" && !info.links.is_empty() {
                 break;
             }
@@ -257,7 +261,7 @@ impl RealDebrid {
                 status: info.status.clone(),
             });
             sleep_or_cancel(Duration::from_millis(1500), &cancel).await?;
-            info = self.torrent_info(torrent_id).await?;
+            info = self.poll_info(torrent_id, &cancel).await?;
         }
 
         // `links` follows the order of selected files.
@@ -286,6 +290,30 @@ impl RealDebrid {
             .into_iter()
             .find(|t| t.hash.eq_ignore_ascii_case(info_hash) && !is_failed(&t.status))
             .map(|t| t.id))
+    }
+
+    /// `torrent_info` for polling loops: a dropped request or a busy API is retried
+    /// a few times instead of failing a download that may take minutes.
+    async fn poll_info(&self, id: &str, cancel: &watch::Receiver<bool>) -> Result<TorrentInfo> {
+        let mut attempt = 0;
+        loop {
+            match self.torrent_info(id).await {
+                Ok(info) => return Ok(info),
+                Err(e) => {
+                    let transient = match &e {
+                        CoreError::Network { .. } | CoreError::Status { status: 500.., .. } => true,
+                        CoreError::RealDebrid(rd) => rd.kind == RdErrorKind::Busy,
+                        _ => false,
+                    };
+                    attempt += 1;
+                    if !transient || attempt >= 4 {
+                        return Err(e);
+                    }
+                    tracing::debug!("Real-Debrid poll failed (attempt {attempt}): {e:#}");
+                    sleep_or_cancel(Duration::from_secs(2 * attempt), cancel).await?;
+                }
+            }
+        }
     }
 
     async fn torrent_info(&self, id: &str) -> Result<TorrentInfo> {

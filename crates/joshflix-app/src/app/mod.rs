@@ -218,6 +218,10 @@ pub struct Controller {
     pub onboarding_step: i32,
     pub dialog: Option<dialog::DialogCtl>,
 
+    /// Compatibility mode was entered automatically; save it once frames show.
+    pub pending_compat_save: bool,
+    /// Bumped to invalidate in-flight next-episode lookups.
+    pub autoplay_generation: u64,
     toast_timer: slint::Timer,
     tick_timer: slint::Timer,
     pub update_available: Option<joshflix_core::update::AvailableUpdate>,
@@ -261,6 +265,8 @@ impl Controller {
             pairing: pairing::PairingCtl::new(),
             onboarding_step: 0,
             dialog: None,
+            pending_compat_save: false,
+            autoplay_generation: 0,
             toast_timer: slint::Timer::default(),
             tick_timer: slint::Timer::default(),
             update_available: None,
@@ -379,6 +385,9 @@ impl Controller {
     }
 
     pub fn go_section(&mut self, section: Section) {
+        if self.player.is_some() {
+            self.stop_playback(true);
+        }
         self.section = section;
         self.rail_index = section.index();
         self.back_stack.clear();

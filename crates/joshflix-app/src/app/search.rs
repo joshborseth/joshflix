@@ -79,6 +79,8 @@ impl Controller {
         let generation = self.search.generation;
         if query.len() < 2 {
             self.search.rows.clear();
+            self.search.row = 0;
+            self.search.keyboard_active = true; // nothing to focus below the keyboard
             self.search.model.set_vec(Vec::<Row>::new());
             self.search.searching = 0;
             self.push_search();
@@ -101,7 +103,7 @@ impl Controller {
                 }
                 c.search.searching = c.search.searching.saturating_sub(1);
                 let items: Vec<RowItem> = result.unwrap_or_default().iter().take(30).map(RowItem::from_meta).collect();
-                let row = &mut c.search.rows[index];
+                let Some(row) = c.search.rows.get_mut(index) else { return };
                 row.empty_text = format!("No {} found", if index == 0 { "movies" } else { "shows" });
                 row.set_items(items);
                 let data = row.to_row();
@@ -180,6 +182,11 @@ impl Controller {
 
         // Results.
         let row_index = self.search.row;
+        if self.search.rows.get(row_index).is_none() {
+            self.search.keyboard_active = true;
+            self.push_search();
+            return true;
+        }
         match key {
             Key::Up | Key::Down => {
                 let target = if key == Key::Up { row_index.checked_sub(1) } else { Some(row_index + 1) };

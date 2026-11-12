@@ -319,16 +319,28 @@ pub struct VideoHost {
     gl: RefCell<Option<GlState>>,
     visible: Cell<bool>,
     unavailable: RefCell<Option<String>>,
+    /// Instance id of the current player; events from abandoned instances are dropped.
+    current_id: Cell<u64>,
+    /// The current player decodes in compatibility (copy-back) mode.
+    compat: Cell<bool>,
+    /// Video was turned off because the GL surface went away (Android background).
+    video_suspended: Cell<bool>,
 }
+
+static NEXT_PLAYER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl VideoHost {
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
 
-    pub fn set_player(&self, player: Result<Player, String>) {
+    pub fn set_player(&self, player: Result<(Player, u64), String>, compat: bool) {
         match player {
-            Ok(player) => *self.player.borrow_mut() = Some(player),
+            Ok((player, id)) => {
+                *self.player.borrow_mut() = Some(player);
+                self.current_id.set(id);
+                self.compat.set(compat);
+            }
             Err(reason) => {
                 tracing::error!("player unavailable: {reason}");
                 *self.unavailable.borrow_mut() = Some(reason);
@@ -336,27 +348,42 @@ impl VideoHost {
         }
     }
 
-    /// Create an mpv instance whose events go to the controller.
-    pub fn create_player(compat_mode: bool) -> Result<Player, String> {
+    /// Create an mpv instance whose events go to the controller, tagged with an id.
+    pub fn create_player(compat_mode: bool) -> Result<(Player, u64), String> {
         let mut config = joshflix_player::PlayerConfig::for_platform();
         if compat_mode && cfg!(target_os = "android") && std::env::var("JOSHFLIX_HWDEC").is_err() {
             config.hwdec = "mediacodec-copy,no".into();
         }
-        Player::new(&config, |event| {
-            let _ = slint::invoke_from_event_loop(move || crate::app::with_controller(|c| c.on_player_event(event)));
+        let id = NEXT_PLAYER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Player::new(&config, move |event| {
+            let _ = slint::invoke_from_event_loop(move || crate::app::with_controller(|c| c.on_player_event(id, event)));
         })
+        .map(|player| (player, id))
         .map_err(|e| e.to_string())
     }
 
-    /// Swap in a fresh mpv instance. The old one is abandoned without cleanup:
-    /// this is only used when its decoder is wedged, and freeing it would block.
-    pub fn replace_player(&self, player: Player) {
+    pub fn current_id(&self) -> u64 {
+        self.current_id.get()
+    }
+
+    pub fn is_compat(&self) -> bool {
+        self.compat.get()
+    }
+
+    /// Swap in a fresh mpv instance. The old one is told to stop (queued, never
+    /// blocks) and then abandoned without cleanup: this is only used when its
+    /// decoder is wedged, and freeing it would block.
+    pub fn replace_player(&self, (player, id): (Player, u64), compat: bool) {
         if let Some(renderer) = self.renderer.borrow_mut().take() {
             std::mem::forget(renderer);
         }
         if let Some(old) = self.player.borrow_mut().replace(player) {
+            let _ = old.stop();
             std::mem::forget(old);
         }
+        self.current_id.set(id);
+        self.compat.set(compat);
+        self.video_suspended.set(false);
     }
 
     pub fn player(&self) -> Option<Player> {
@@ -399,6 +426,10 @@ impl VideoHost {
                             Ok(renderer) => {
                                 *host.renderer.borrow_mut() = Some(renderer);
                                 *host.gl.borrow_mut() = GlState::load(get_proc_address);
+                                // Freeing the old render context disabled video; turn it back on.
+                                if host.video_suspended.replace(false) {
+                                    let _ = player.set_property("vid", "auto");
+                                }
                             }
                             Err(e) => tracing::error!("video renderer: {e}"),
                         }
@@ -428,6 +459,11 @@ impl VideoHost {
                 }
                 RenderingState::RenderingTeardown => {
                     // The GL context is going away (e.g. Android pause): free GPU state now.
+                    // mpv disables video when its render context is freed mid-file, so
+                    // remember to re-enable it when a new context arrives.
+                    if host.renderer.borrow().is_some() && host.visible.get() {
+                        host.video_suspended.set(true);
+                    }
                     host.renderer.borrow_mut().take();
                     host.gl.borrow_mut().take();
                 }

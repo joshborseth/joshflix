@@ -17,7 +17,9 @@ pub trait Platform {
     /// Keep the screen awake during playback.
     fn keep_screen_on(&self, on: bool);
     /// Hand a verified APK to the system installer.
-    fn install_apk(&self, path: &std::path::Path) -> Result<(), String>;
+    /// Hand a downloaded APK to the system installer. Runs in the background;
+    /// `done` is called on that background thread with the outcome.
+    fn install_apk(&self, path: &std::path::Path, done: InstallDone);
     /// True when this platform can install updates.
     fn can_install_updates(&self) -> bool;
     /// Human-readable device name for About.
@@ -27,6 +29,8 @@ pub trait Platform {
         false
     }
 }
+
+pub type InstallDone = Box<dyn FnOnce(Result<(), String>) + Send + 'static>;
 
 /// The Android ABI of the running build (the update must match it).
 pub fn current_abi() -> &'static str {
@@ -78,8 +82,8 @@ impl Platform for Desktop {
 
     fn keep_screen_on(&self, _on: bool) {}
 
-    fn install_apk(&self, path: &std::path::Path) -> Result<(), String> {
-        Err(format!("Updates install on the TV. Downloaded to {}", path.display()))
+    fn install_apk(&self, path: &std::path::Path, done: InstallDone) {
+        done(Err(format!("Updates install on the TV. Downloaded to {}", path.display())));
     }
 
     fn can_install_updates(&self) -> bool {
@@ -195,11 +199,16 @@ pub mod android {
             let path: String = env.get_string(&path.into()).ok()?.into();
             Some(PathBuf::from(path))
         }
+    }
 
-        fn install_inner(&self, path: &Path) -> Result<(), jni::errors::Error> {
-            let bytes = std::fs::read(path).map_err(|_| jni::errors::Error::JavaException)?;
-            let mut env = self.vm.attach_current_thread()?;
-            let activity = self.activity();
+    /// Copy the APK into a MediaStore Downloads entry we own (API 29+, no storage
+    /// permission) and open it with the system installer. Runs on a background thread.
+    fn install_on_thread(vm: &JavaVM, activity: &JObject<'static>, path: &Path) -> Result<(), String> {
+        use std::io::Read;
+        let mut file = std::fs::File::open(path).map_err(|e| format!("can't read the download: {e}"))?;
+        let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+        let result = (|| -> Result<(), jni::errors::Error> {
+            let activity = activity;
             let resolver = env
                 .call_method(&activity, "getContentResolver", "()Landroid/content/ContentResolver;", &[])?
                 .l()?;
@@ -232,8 +241,14 @@ pub mod android {
             let stream = env
                 .call_method(&resolver, "openOutputStream", "(Landroid/net/Uri;)Ljava/io/OutputStream;", &[JValue::Object(&uri)])?
                 .l()?;
-            for chunk in bytes.chunks(256 * 1024) {
-                let array = env.byte_array_from_slice(chunk)?;
+            // Stream the file in chunks instead of holding the whole APK in memory.
+            let mut chunk = vec![0u8; 256 * 1024];
+            loop {
+                let n = file.read(&mut chunk).map_err(|_| jni::errors::Error::JavaException)?;
+                if n == 0 {
+                    break;
+                }
+                let array = env.byte_array_from_slice(&chunk[..n])?;
                 env.call_method(&stream, "write", "([B)V", &[JValue::Object(&array)])?;
                 env.delete_local_ref(array)?;
             }
@@ -250,10 +265,16 @@ pub mod android {
             )?;
             // FLAG_GRANT_READ_URI_PERMISSION | FLAG_ACTIVITY_NEW_TASK
             env.call_method(&intent, "addFlags", "(I)Landroid/content/Intent;", &[JValue::Int(0x0000_0001 | 0x1000_0000)])?;
-            env.call_method(&activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
+            env.call_method(activity, "startActivity", "(Landroid/content/Intent;)V", &[JValue::Object(&intent)])?;
             Ok(())
-        }
+        })();
+        result.map_err(|e| {
+            // Clear any pending Java exception so later JNI calls on this thread work.
+            let _ = env.exception_clear();
+            e.to_string()
+        })
     }
+
 
     impl Platform for Android {
         fn data_dir(&self) -> PathBuf {
@@ -298,17 +319,29 @@ pub mod android {
             }
         }
 
-        fn install_apk(&self, path: &Path) -> Result<(), String> {
+        fn install_apk(&self, path: &Path, done: super::InstallDone) {
             if self.sdk_int() < 29 {
-                return Err("This TV's Android version can't install updates from the app. Install it with adb.".into());
+                done(Err("This TV's Android version can't install updates from the app. Install it with adb.".into()));
+                return;
             }
-            self.install_inner(path).map_err(|e| {
-                // Clear any pending Java exception so later JNI calls work.
-                if let Ok(env) = self.vm.attach_current_thread() {
-                    let _ = env.exception_clear();
-                }
-                format!("Couldn't open the installer ({e}). Allow Joshflix to install unknown apps in Android settings.")
-            })
+            // Copying a 40 MB APK through JNI takes seconds; keep it off the UI thread.
+            let (vm_ptr, activity_ptr) = (self.app.vm_as_ptr() as usize, self.app.activity_as_ptr() as usize);
+            let path = path.to_owned();
+            std::thread::Builder::new()
+                .name("apk-install".into())
+                .spawn(move || {
+                    // SAFETY: the JavaVM and the activity's global ref live for the whole process.
+                    let result = unsafe { JavaVM::from_raw(vm_ptr as *mut jni::sys::JavaVM) }
+                        .map_err(|e| e.to_string())
+                        .and_then(|vm| {
+                            let activity = unsafe { JObject::from_raw(activity_ptr as jni::sys::jobject) };
+                            install_on_thread(&vm, &activity, &path)
+                        });
+                    done(result.map_err(|e| {
+                        format!("Couldn't open the installer ({e}). Allow Joshflix to install unknown apps in Android settings.")
+                    }));
+                })
+                .expect("spawn installer thread");
         }
 
         fn can_install_updates(&self) -> bool {

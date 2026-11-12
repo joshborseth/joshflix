@@ -82,7 +82,7 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
         .ok()
         .and_then(|s| s.video_compat_mode)
         .unwrap_or_else(|| platform.is_emulator());
-    video.set_player(VideoHost::create_player(compat));
+    video.set_player(VideoHost::create_player(compat), compat);
     video.attach(&ui);
 
     AppState::get(&ui).on_key(|key| {

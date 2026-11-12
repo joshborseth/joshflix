@@ -143,6 +143,7 @@ impl Controller {
         d.model.set_vec(Vec::new());
         d.index = 0;
         d.exhausted = false;
+        d.loading = false; // the old page's result is now stale and will be ignored
         d.generation += 1;
         self.load_discover_page();
     }

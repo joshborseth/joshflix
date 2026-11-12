@@ -252,6 +252,8 @@ export component AppWindow inherits Window {
             if (event.text == Key.RightArrow) { return AppState.key(event.repeat ? "right+" : "right") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.UpArrow) { return AppState.key("up") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.DownArrow) { return AppState.key("down") ? EventResult.accept : EventResult.reject; }
+            // A held OK or Back repeats; acting on each repeat would fire buttons or pop screens in a burst.
+            if (event.repeat && (event.text == Key.Return || event.text == Key.Escape || event.text == Key.Back)) { return EventResult.accept; }
             if (event.text == Key.Return || (event.text == Key.Space && AppState.screen == Screen.player)) { return AppState.key("ok") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.Escape || event.text == Key.Back) { return AppState.key("back") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.Backspace) { return AppState.key("backspace") ? EventResult.accept : EventResult.reject; }
