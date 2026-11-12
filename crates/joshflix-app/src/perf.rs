@@ -35,8 +35,6 @@ pub fn take() -> (u64, u64, f64, f64) {
 thread_local! {
     /// UI-thread marks for the frame being drawn, set from the rendering notifier.
     static FRAME: std::cell::RefCell<FrameMarks> = std::cell::RefCell::new(FrameMarks::default());
-    /// GPU time of finished frames, in ns. Results arrive a few frames late.
-    static GPU_NS: std::cell::RefCell<Vec<i64>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// What the rendering notifier saw while one frame was drawn.
@@ -79,17 +77,6 @@ pub fn draw_finished(now_ns: i64) {
         let mut f = f.borrow_mut();
         f.draw_ns = f.draw_start_ns.map(|start| now_ns - start);
     });
-}
-
-/// A GPU timer query finished: the GPU spent `ns` on a frame's UI.
-pub fn gpu_frame(ns: i64) {
-    GPU_NS.with(|g| g.borrow_mut().push(ns));
-}
-
-/// GPU frame times since the last call.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
-pub fn take_gpu() -> Vec<i64> {
-    GPU_NS.with(|g| std::mem::take(&mut *g.borrow_mut()))
 }
 
 /// Monotonic ns since the first call; only differences mean anything.

@@ -12,7 +12,6 @@ mod app;
 #[cfg(target_os = "android")]
 mod audio_fx;
 mod format;
-mod gpu_timer;
 mod keyboard;
 mod logsink;
 mod perf;

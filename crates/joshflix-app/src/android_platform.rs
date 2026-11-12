@@ -474,7 +474,6 @@ impl FrameStats {
             self.start_ns = f.now_ns;
             // Counters cover this window only.
             let _ = crate::perf::take();
-            let _ = crate::perf::take_gpu();
         }
         self.frames += 1;
         if let Some(video_ns) = f.marks.video_ns {
@@ -505,18 +504,12 @@ impl FrameStats {
 
     fn report(&mut self, now_ns: i64) {
         let (keys, images, image_mean, image_max) = crate::perf::take();
-        let mut gpu = crate::perf::take_gpu();
-        let gpu = if gpu.is_empty() {
-            "gpu n/a".to_owned()
-        } else {
-            format!("gpu median {:.1} p95 {:.1} ms", pick(&mut gpu, 0.5), pick(&mut gpu, 0.95))
-        };
         // Mostly video: the frame rate is the film's, not dropped UI frames.
         if self.video_frames * 2 > self.frames {
             let secs = ms(now_ns - self.start_ns) / 1e3;
             tracing::info!(
                 "playback: {} video frames in {:.1} s ({:.1} fps); frame median {:.1} ms, p95 {:.1} ms; \
-                 mpv median {:.1} p95 {:.1}; {gpu} (UI over the video)",
+                 mpv median {:.1} p95 {:.1}",
                 self.video_frames,
                 secs,
                 f64::from(self.video_frames) / secs.max(0.001),
@@ -535,7 +528,7 @@ impl FrameStats {
             "frames: {} animated, {} late, {} vsyncs missed; render+swap median {:.1} ms, p95 {:.1} ms, max {:.1} ms; \
              swap median {:.1} p95 {:.1}; draw median {:.1} p95 {:.1}; update median {:.1} p95 {:.1}; \
              UI thread: cpu median {:.1} p95 {:.1}, waiting for a core median {:.1} p95 {:.1}, blocked median {:.1} p95 {:.1}; \
-             {gpu}; {} keys; {} images in (mean {:.0} ms, max {:.0} ms)",
+             {} keys; {} images in (mean {:.0} ms, max {:.0} ms)",
             self.paced,
             self.late,
             self.missed,

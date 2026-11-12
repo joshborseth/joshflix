@@ -327,10 +327,6 @@ pub struct VideoHost {
     /// background, or a TV that rebuilds its window on a display-mode switch).
     /// Holds the video track that was playing, if the track list knew it.
     video_suspended: Cell<Option<Option<i64>>>,
-    /// Times the UI's drawing on the GPU for the TV log's frame summary.
-    gpu_timer: RefCell<Option<crate::gpu_timer::GpuTimer>>,
-    /// Timer queries were set up (or found unsupported) for this GL context.
-    gpu_timer_tried: Cell<bool>,
 }
 
 static NEXT_PLAYER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -472,22 +468,10 @@ impl VideoHost {
                         }
                         crate::perf::video_drawn(crate::perf::now_ns() - started);
                     }
-                    // Timed after the video: mpv runs its own timer queries, and two
-                    // can't be active at once.
-                    if !host.gpu_timer_tried.replace(true) {
-                        // SAFETY: Slint's GL context is current during BeforeRendering.
-                        *host.gpu_timer.borrow_mut() = unsafe { crate::gpu_timer::GpuTimer::new(get_proc_address) };
-                    }
-                    if let Some(timer) = host.gpu_timer.borrow_mut().as_mut() {
-                        timer.begin();
-                    }
                     crate::perf::draw_started(crate::perf::now_ns());
                 }
                 RenderingState::AfterRendering => {
                     crate::perf::draw_finished(crate::perf::now_ns());
-                    if let Some(timer) = host.gpu_timer.borrow_mut().as_mut() {
-                        timer.end();
-                    }
                     if host.visible.get()
                         && let Some(renderer) = host.renderer.borrow().as_ref()
                     {
@@ -512,8 +496,6 @@ impl VideoHost {
                     }
                     host.renderer.borrow_mut().take();
                     host.gl.borrow_mut().take();
-                    host.gpu_timer.borrow_mut().take();
-                    host.gpu_timer_tried.set(false);
                 }
                 _ => {}
             }
