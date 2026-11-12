@@ -18,6 +18,11 @@ const SAVE_EVERY: Duration = Duration::from_secs(10);
 const NEXT_CARD_SECS: f64 = 60.0;
 const COUNTDOWN_SECS: u64 = 10;
 
+/// Give up waiting for a stream to open after this long.
+const OPEN_TIMEOUT: Duration = Duration::from_secs(45);
+/// Loaded and well buffered, yet no picture after this long: the decoder is stuck.
+const DECODE_TIMEOUT: Duration = Duration::from_secs(40);
+
 const CONTROL_COUNT_WITH_NEXT: usize = 7;
 const CONTROL_COUNT: usize = 6;
 
@@ -71,6 +76,12 @@ pub struct PlayerCtl {
     /// Next-episode lookup in flight.
     autoplay_pending: bool,
     hwdec_fallback: bool,
+    /// When playback was requested (to time out a stream that never opens).
+    opened_at: Instant,
+    /// The open timed out; cleared if the file loads after all.
+    open_timed_out: bool,
+    /// mpv's latest error message, shown with a failure.
+    last_mpv_error: Option<String>,
     /// Last overlay visibility pushed to mpv (to lift subtitles above the controls).
     overlay_shown: Option<bool>,
     night: bool,
@@ -103,6 +114,13 @@ impl Controller {
             return;
         }
         self.platform.keep_screen_on(true);
+        tracing::info!(
+            "play {} · {} · cached={} · stream host {}",
+            request.video.video_id(),
+            source.release.release_name,
+            source.cached,
+            url.split('/').nth(2).unwrap_or("?"),
+        );
         let next = self.next_for(&request);
         self.player = Some(PlayerCtl {
             request: request.clone(),
@@ -132,6 +150,9 @@ impl Controller {
             cache_ahead: 0.0,
             autoplay_pending: false,
             hwdec_fallback: false,
+            opened_at: Instant::now(),
+            open_timed_out: false,
+            last_mpv_error: None,
             overlay_shown: None,
             night,
         });
@@ -201,17 +222,19 @@ impl Controller {
         if instance != self.video.current_id() {
             return;
         }
-        if let PlayerEvent::Log { level, text } = &event {
-            match level.as_str() {
-                "error" | "fatal" => tracing::error!("mpv: {text}"),
-                "warn" => tracing::warn!("mpv: {text}"),
-                _ => tracing::info!("mpv[{level}]: {text}"),
-            }
-            return;
-        }
         let Some(p) = self.player.as_mut() else { return };
         match event {
+            // Already logged on mpv's thread; only errors are forwarded here.
+            PlayerEvent::Log { text, .. } => {
+                p.last_mpv_error = Some(text);
+                return;
+            }
             PlayerEvent::FileLoaded => {
+                tracing::info!("file loaded after {:.1} s", p.opened_at.elapsed().as_secs_f64());
+                if p.open_timed_out {
+                    p.open_timed_out = false;
+                    p.error = None;
+                }
                 p.video_shown = true;
                 p.subtitle_choice_pending = true;
                 p.loaded_at = Some(Instant::now());
@@ -219,6 +242,9 @@ impl Controller {
                 self.add_subtitles();
             }
             PlayerEvent::Started => {
+                if !p.started {
+                    tracing::info!("first frame after {:.1} s", p.opened_at.elapsed().as_secs_f64());
+                }
                 p.buffering = None;
                 p.started = true;
                 // Compatibility mode proved itself: remember it for this TV.
@@ -277,7 +303,9 @@ impl Controller {
                 }
             }
             PlayerEvent::Ended(EndReason::Error(message)) => {
-                p.error = Some(format!("Playback failed: {message}. Press Back and try another source."));
+                tracing::warn!("playback failed: {message} (last mpv error: {:?})", p.last_mpv_error);
+                let detail = p.last_mpv_error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default();
+                p.error = Some(format!("Playback failed: {message}{detail}. Press Back and try another source."));
                 p.buffering = None;
             }
             _ => {}
@@ -441,6 +469,26 @@ impl Controller {
             tracing::warn!("no frames from zero-copy MediaCodec; switching to compatibility mode");
             self.recover_with_compat_mode();
             return;
+        }
+        // Never spin forever: say what went wrong instead.
+        if p.error.is_none() && !p.video_shown && p.opened_at.elapsed() > OPEN_TIMEOUT {
+            tracing::warn!("stream didn't open within {OPEN_TIMEOUT:?} (last mpv error: {:?})", p.last_mpv_error);
+            let detail = p.last_mpv_error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default();
+            p.error = Some(format!("The stream didn't open{detail}. Press Back and try another source."));
+            p.open_timed_out = true;
+            p.buffering = None;
+        }
+        if p.error.is_none()
+            && !p.started
+            && !p.paused
+            && p.cache_ahead >= 10.0
+            && p.loaded_at.is_some_and(|t| t.elapsed() > DECODE_TIMEOUT)
+        {
+            tracing::warn!("no picture {DECODE_TIMEOUT:?} after loading with {:.0} s buffered", p.cache_ahead);
+            p.error = Some(
+                "This TV couldn't decode this video. Press Back and try another source (a 1080p one is safest).".into(),
+            );
+            p.buffering = None;
         }
         // Commit a pending seek once the user pauses on a target.
         if let (Some(target), Some(at)) = (p.seek_target, p.seek_commit_at)

@@ -408,8 +408,10 @@ impl Player {
             // SAFETY: valid handle and NUL-terminated name.
             unsafe { (inner.mpv.mpv_observe_property)(inner.handle, id, name.as_ptr(), format) };
         }
-        // JOSHFLIX_MPV_LOG=v (or debug) for diagnosing playback on devices.
-        let level = cstring(&std::env::var("JOSHFLIX_MPV_LOG").unwrap_or_else(|_| "warn".into()));
+        // Android logs at info (decoder, audio and video output choices) because
+        // TVs are diagnosed from their uploaded logs. JOSHFLIX_MPV_LOG=v for more.
+        let default_level = if cfg!(target_os = "android") { "info" } else { "warn" };
+        let level = cstring(&std::env::var("JOSHFLIX_MPV_LOG").unwrap_or_else(|_| default_level.into()));
         // SAFETY: valid handle.
         unsafe { (inner.mpv.mpv_request_log_messages)(inner.handle, level.as_ptr()) };
 

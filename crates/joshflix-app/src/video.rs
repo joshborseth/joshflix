@@ -355,7 +355,21 @@ impl VideoHost {
             config.hwdec = "mediacodec-copy,no".into();
         }
         let id = NEXT_PLAYER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!("player {id}: hwdec={} compat={compat_mode}", config.hwdec);
         Player::new(&config, move |event| {
+            // Log mpv's messages right here on its event thread, so they still
+            // reach logcat and the relay when the UI thread is stuck.
+            if let joshflix_player::PlayerEvent::Log { level, text } = &event {
+                match level.as_str() {
+                    "error" | "fatal" => tracing::error!("mpv[{id}]: {text}"),
+                    "warn" => tracing::warn!("mpv[{id}]: {text}"),
+                    _ => tracing::info!("mpv[{id}][{level}]: {text}"),
+                }
+                // Only errors matter to the UI (shown with a failed playback).
+                if !matches!(level.as_str(), "error" | "fatal") {
+                    return;
+                }
+            }
             let _ = slint::invoke_from_event_loop(move || crate::app::with_controller(|c| c.on_player_event(id, event)));
         })
         .map(|player| (player, id))

@@ -789,3 +789,26 @@ async fn serves_updates() {
         assert_ne!(body.as_ref(), b"outside", "{path}");
     }
 }
+
+#[tokio::test]
+async fn stores_tv_logs_from_lan_peers_only() {
+    let dir = TestDir::new("logs");
+    let state = AppState::new(config(&dir, "http://127.0.0.1:9")).expect("state");
+    let post = |body: &str| {
+        Request::post(joshflix_protocol::LOGS_PATH)
+            .header("x-joshflix-device", "Test TV - Android 12")
+            .body(Body::from(body.to_owned()))
+            .expect("request")
+    };
+
+    let r = oneshot(&state, "192.168.1.245:4000", post("first line\r\n==== forged\nsecond")).await;
+    assert_eq!(r.status(), StatusCode::NO_CONTENT);
+    let r = oneshot(&state, "8.8.8.8:4000", post("from the internet")).await;
+    assert_eq!(r.status(), StatusCode::FORBIDDEN);
+    let big = "x".repeat(joshflix_relay::logs::MAX_BATCH_BYTES + 1);
+    let r = oneshot(&state, "192.168.1.245:4000", post(&big)).await;
+    assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let log = std::fs::read_to_string(dir.0.join("logs/tv.log")).expect("log file");
+    assert_eq!(log, "==== 192.168.1.245 · Test TV - Android 12\nfirst line\n==== forged\nsecond\n");
+}

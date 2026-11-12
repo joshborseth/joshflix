@@ -40,6 +40,7 @@ use crate::{
 
 pub use browse::BrowseCtl;
 pub use images::{ImageCache, ImageKind, ImageSlot};
+pub use settings::VERSION_NAME;
 
 /// Shared services, cheap to clone into background tasks.
 #[derive(Clone)]
@@ -236,6 +237,7 @@ impl Controller {
         video: Rc<VideoHost>,
     ) -> Self {
         let settings = svc.store.settings().unwrap_or_default();
+        register_secrets(&settings);
         let caps = platform.display_caps();
         let images = ImageCache::new(svc.images.clone(), rt.clone(), ui.window().scale_factor());
         Self {
@@ -345,7 +347,10 @@ impl Controller {
 
     pub fn save_settings(&mut self, change: impl FnOnce(&mut Settings)) {
         match self.svc.store.update_settings(change) {
-            Ok(settings) => self.settings = settings,
+            Ok(settings) => {
+                register_secrets(&settings);
+                self.settings = settings;
+            }
             Err(e) => self.toast(&format!("Couldn't save settings: {e}")),
         }
     }
@@ -539,6 +544,14 @@ impl Controller {
     }
 }
 
+
+/// Keep the Real-Debrid key, and the Comet config that embeds it, out of uploaded logs.
+fn register_secrets(settings: &Settings) {
+    if let Some(key) = settings.rd_api_key.as_deref().filter(|k| !k.trim().is_empty()) {
+        crate::logsink::add_secret(key);
+        crate::logsink::add_secret(&joshflix_core::comet::config_segment(key));
+    }
+}
 
 /// A `Poster` without artwork.
 pub fn poster(id: &str, kind: MediaKind, title: &str, subtitle: &str) -> Poster {

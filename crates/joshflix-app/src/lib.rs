@@ -11,6 +11,7 @@ mod vsync;
 mod app;
 mod format;
 mod keyboard;
+mod logsink;
 pub mod platform;
 mod video;
 
@@ -67,6 +68,10 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     let http = Http::new().map_err(|e| e.to_string())?;
     let store = Store::open(&platform.data_dir().join("joshflix.redb")).map_err(|e| format!("storage: {e}"))?;
     let server = std::env::var("JOSHFLIX_SERVER_URL").unwrap_or_else(|_| DEFAULT_SERVER.to_owned());
+    // TVs usually have no adb: their logs go to the relay on the dev box.
+    if cfg!(target_os = "android") {
+        logsink::spawn_uploader(runtime.handle(), http.clone(), &server, &platform.device_label());
+    }
     let services = Services {
         cinemeta: Cinemeta::new(http.clone()),
         subtitles: OpenSubtitles::new(http.clone()),
@@ -78,12 +83,10 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     };
 
     let video = VideoHost::new();
-    let compat = services
-        .store
-        .settings()
-        .ok()
-        .and_then(|s| s.video_compat_mode)
-        .unwrap_or_else(|| platform.is_emulator());
+    // Automatic means compatibility (MediaCodec copy-back): it's what mpv-android
+    // uses by default, and zero-copy through AImageReader stalled on the only
+    // Android device it was tried on. "Hardware" in Settings opts into zero-copy.
+    let compat = services.store.settings().ok().and_then(|s| s.video_compat_mode).unwrap_or(true);
     video.set_player(VideoHost::create_player(compat), compat);
     video.attach(&ui);
 
@@ -106,11 +109,15 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
 fn android_main(app: android_activity::AndroidApp) {
-    android_logger::init_once(
+    // logcat, plus the buffer that `logsink` uploads to the relay.
+    let logcat = android_logger::AndroidLogger::new(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
             .with_tag("joshflix"),
     );
+    if log::set_logger(Box::leak(Box::new(logsink::TeeLogger { logcat }))).is_ok() {
+        log::set_max_level(log::LevelFilter::Info);
+    }
     std::panic::set_hook(Box::new(|info| log::error!("panic: {info}")));
     let tv = android_platform::TvPlatform::new(
         app.clone(),

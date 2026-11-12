@@ -21,6 +21,7 @@
 //! | `POST` | `/api/v1/pairings/{code}/key` | none | [`SubmitKeyRequest`] → [`SubmitKeyResponse`] or [`ApiError`] |
 //! | `GET` | [`UPDATE_MANIFEST_PATH`] | none | → [`UpdateManifest`] (404 when nothing is published) |
 //! | `GET` | `/updates/{file}` | none | → APK bytes |
+//! | `POST` | [`LOGS_PATH`] | none | plain-text log lines (header `x-joshflix-device`) → 204 |
 //! | `GET` | `/healthz` | none | → `ok` |
 
 use serde::{Deserialize, Serialize};
@@ -29,6 +30,8 @@ use serde::{Deserialize, Serialize};
 pub const PAIRINGS_PATH: &str = "/api/v1/pairings";
 /// Path of the update manifest.
 pub const UPDATE_MANIFEST_PATH: &str = "/api/v1/updates/latest";
+/// Path the TV posts its diagnostic log lines to.
+pub const LOGS_PATH: &str = "/api/v1/logs";
 /// Longest long-poll the relay honours, in seconds.
 pub const MAX_POLL_WAIT_SECS: u64 = 30;
 /// How long a pairing stays valid, in seconds.

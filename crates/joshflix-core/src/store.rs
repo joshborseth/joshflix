@@ -46,7 +46,7 @@ pub struct Settings {
     pub frame_rate_matching: bool,
     pub autoplay_next: bool,
     /// Decode with MediaCodec copy-back instead of zero-copy (for TVs whose
-    /// drivers stall on the fast path). `None` = automatic.
+    /// drivers stall on the fast path). `None` = automatic, which is copy-back.
     pub video_compat_mode: Option<bool>,
     /// Last update version the user dismissed.
     pub dismissed_update_code: Option<u64>,

@@ -13,6 +13,8 @@
 //!    nothing touches disk.
 //! 2. **App updates.** [`updates`] serves `updates/manifest.json` and the APKs
 //!    next to it from the data directory. `cargo xtask publish` writes them.
+//! 3. **Diagnostic logs.** TVs without adb post their log lines to [`logs`],
+//!    which appends them to `logs/tv.log` in the data directory.
 //!
 //! # Design
 //!
@@ -37,6 +39,7 @@
 //! [`router`] builds the whole app from a [`Config`], so tests can run it
 //! without environment variables.
 
+pub mod logs;
 pub mod netguard;
 pub mod pairing;
 pub mod phone_page;
@@ -55,7 +58,7 @@ use std::{
 
 use axum::{Router, middleware, routing::get};
 use joshflix_protocol::{
-    MAX_POLL_WAIT_SECS, PAIRING_TTL_SECS, PAIRINGS_PATH, UPDATE_MANIFEST_PATH,
+    LOGS_PATH, MAX_POLL_WAIT_SECS, PAIRING_TTL_SECS, PAIRINGS_PATH, UPDATE_MANIFEST_PATH,
 };
 
 pub use error::api_error;
@@ -144,6 +147,11 @@ impl Config {
     pub fn updates_dir(&self) -> PathBuf {
         self.data_dir.join("updates")
     }
+
+    /// Directory holding the TVs' diagnostic logs.
+    pub fn logs_dir(&self) -> PathBuf {
+        self.data_dir.join("logs")
+    }
 }
 
 fn non_empty_env(name: &str) -> Option<String> {
@@ -162,6 +170,8 @@ struct Inner {
     rd: realdebrid::RealDebrid,
     create_limiter: ratelimit::RateLimiter,
     submit_limiter: ratelimit::RateLimiter,
+    /// Serializes appends to the TV log file.
+    logs_lock: tokio::sync::Mutex<()>,
 }
 
 impl AppState {
@@ -173,6 +183,7 @@ impl AppState {
                 create_limiter: ratelimit::RateLimiter::new(config.create_limit),
                 submit_limiter: ratelimit::RateLimiter::new(config.submit_limit),
                 pairings: Mutex::new(HashMap::new()),
+                logs_lock: tokio::sync::Mutex::new(()),
                 rd,
                 config,
             }),
@@ -236,6 +247,11 @@ pub fn router(state: AppState) -> Router {
         .route("/p/{code}", get(phone_page::page))
         .route(UPDATE_MANIFEST_PATH, get(updates::manifest))
         .route("/updates/{file}", get(updates::apk))
+        .route(
+            LOGS_PATH,
+            axum::routing::post(logs::upload)
+                .layer(axum::extract::DefaultBodyLimit::max(logs::MAX_BATCH_BYTES)),
+        )
         .fallback(|| async {
             api_error(
                 axum::http::StatusCode::NOT_FOUND,

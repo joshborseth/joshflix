@@ -10,7 +10,10 @@ use super::{Controller, Key, shared};
 use crate::platform::current_abi;
 use crate::{Icons, NavItem, SettingItem, SettingsState};
 
-pub const VERSION_NAME: &str = env!("CARGO_PKG_VERSION");
+pub const VERSION_NAME: &str = match option_env!("JOSHFLIX_VERSION_NAME") {
+    Some(name) => name,
+    None => env!("CARGO_PKG_VERSION"),
+};
 pub const VERSION_CODE: u64 = match option_env!("JOSHFLIX_VERSION_CODE") {
     Some(code) => parse_u64(code),
     None => 1,
@@ -156,7 +159,7 @@ impl Controller {
                         Some(false) => "Hardware",
                         Some(true) => "Compatibility",
                     },
-                    "Compatibility mode helps TVs that show a black screen. Applies after restarting Joshflix",
+                    "Automatic copies decoded frames, which works on every TV. Hardware skips the copy but can show a black screen. Applies after restarting Joshflix",
                     Action::VideoDecoding,
                 ),
             ],

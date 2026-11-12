@@ -24,10 +24,6 @@ pub trait Platform {
     fn can_install_updates(&self) -> bool;
     /// Human-readable device name for About.
     fn device_label(&self) -> String;
-    /// True on the Android emulator (its virtual decoder can't do zero-copy).
-    fn is_emulator(&self) -> bool {
-        false
-    }
 }
 
 pub type InstallDone = Box<dyn FnOnce(Result<(), String>) + Send + 'static>;
@@ -433,17 +429,6 @@ pub mod android {
 
         fn can_install_updates(&self) -> bool {
             true
-        }
-
-        fn is_emulator(&self) -> bool {
-            let Ok(mut env) = self.vm.attach_current_thread() else { return false };
-            let hardware = env
-                .get_static_field("android/os/Build", "HARDWARE", "Ljava/lang/String;")
-                .and_then(|v| v.l())
-                .ok()
-                .and_then(|v| env.get_string(&v.into()).ok().map(String::from))
-                .unwrap_or_default();
-            hardware.contains("ranchu") || hardware.contains("goldfish")
         }
 
         fn device_label(&self) -> String {

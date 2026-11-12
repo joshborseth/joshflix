@@ -1,9 +1,10 @@
 # Joshflix relay
 
-`joshflix-relay` is a small private server on the dev box. It does two jobs for the TV app:
+`joshflix-relay` is a small private server on the dev box. It does three jobs for the TV app:
 
 - **Real-Debrid pairing.** The TV shows a QR code. The phone opens the relay's page, pastes its Real-Debrid API key, and the relay checks the key and hands it to the TV once. The key stays in memory only and is forgotten after delivery.
 - **App updates.** It serves `updates/manifest.json` and the APKs that `cargo xtask publish` writes into the data directory.
+- **TV logs.** TVs usually have no adb, so the app posts its log lines every few seconds. The relay appends them to `logs/tv.log` in the data directory, and rotates it to `tv.log.1` past 8 MB. The app removes the Real-Debrid key, and the Comet link segment that contains it, before sending.
 
 It answers only on the home LAN (`192.168.1.67`) and the tailnet (`100.107.121.43`). Requests from any other address get 403. Do not port-forward it, open firewall ports for it, or put it behind Tailscale Funnel or serve.
 
@@ -54,6 +55,7 @@ Restarting drops any pairing in progress. The TV then shows an expired code and 
 ```sh
 systemctl --user status joshflix-relay
 journalctl --user -u joshflix-relay -f
+tail -f ~/.local/share/joshflix-relay/logs/tv.log   # what the TVs report
 ```
 
 Logs never include API keys, TV secrets, or full pairing codes. A code appears only as its first four characters.

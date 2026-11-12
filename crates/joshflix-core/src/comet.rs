@@ -114,6 +114,12 @@ impl Comet {
     }
 }
 
+/// The config path segment Comet URLs carry for `rd_api_key`. It embeds the
+/// key, so logs must treat it as a secret.
+pub fn config_segment(rd_api_key: &str) -> String {
+    encode_config(rd_api_key.trim())
+}
+
 /// Standard-base64 config that's safe in a URL path segment. Comet decodes
 /// standard base64, so URL-safe alphabets don't work, and `/` would split the
 /// path. In ASCII JSON a `/` can only come from a `?` (0x3F) landing on the last
