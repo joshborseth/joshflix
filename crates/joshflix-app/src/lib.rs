@@ -16,6 +16,7 @@ mod keyboard;
 mod logsink;
 mod perf;
 pub mod platform;
+mod screen_colors;
 mod video;
 #[cfg(target_os = "android")]
 mod video_surface;
@@ -80,6 +81,9 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     if cfg!(target_os = "android") {
         logsink::spawn_uploader(runtime.handle(), http.clone(), &server, &platform.device_label());
     }
+    // The house lights can follow the colors on screen (through the relay).
+    #[cfg(target_os = "android")]
+    screen_colors::spawn(&server, video_surface::sample_screen);
     let services = Services {
         cinemeta: Cinemeta::new(http.clone()),
         subtitles: OpenSubtitles::new(http.clone()),
@@ -109,6 +113,8 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     app::install(Controller::new(ui.clone_strong(), services, runtime.handle().clone(), platform, video));
     with_controller(Controller::start);
     let result = ui.run().map_err(|e| format!("event loop: {e}"));
+    // Nothing plays once the UI is gone (the process can outlive it).
+    screen_colors::set_now_playing(false, None);
     app::uninstall();
     runtime.shutdown_timeout(std::time::Duration::from_secs(1));
     result

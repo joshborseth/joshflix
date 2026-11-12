@@ -812,3 +812,92 @@ async fn stores_tv_logs_from_lan_peers_only() {
     let log = std::fs::read_to_string(dir.0.join("logs/tv.log")).expect("log file");
     assert_eq!(log, "==== 192.168.1.245 · Test TV - Android 12\nfirst line\n==== forged\nsecond\n");
 }
+
+#[tokio::test]
+async fn streams_screen_colors_to_listeners() {
+    use base64::Engine as _;
+    use futures_util::StreamExt as _;
+    use joshflix_protocol::{
+        SCREEN_FEED_PATH, SCREEN_PATH, ScreenFeedFrame, ScreenReport, ScreenReportResponse,
+        ScreenSample,
+    };
+    use tokio_tungstenite::tungstenite::Message;
+
+    let dir = TestDir::new("screen");
+    let relay = Relay::start(config(&dir, "http://127.0.0.1:9")).await;
+    let report = |playing: bool, rgb: Option<[u8; 3]>| ScreenReport {
+        playing,
+        title: Some("Dune: Part Two".into()),
+        sample: rgb.map(|c| ScreenSample {
+            width: 4,
+            height: 2,
+            rgb: base64::engine::general_purpose::STANDARD.encode(c.repeat(8)),
+        }),
+    };
+    let post = |body: ScreenReport| {
+        let request = relay.http.post(relay.url(SCREEN_PATH)).json(&body);
+        async move {
+            let r = request.send().await.expect("report");
+            assert_eq!(r.status(), StatusCode::OK);
+            r.json::<ScreenReportResponse>().await.expect("report json")
+        }
+    };
+
+    // Nobody listens: the TV is told not to send pictures.
+    assert!(!post(report(true, None)).await.wanted);
+
+    let ws_url = relay.url(SCREEN_FEED_PATH).replacen("http://", "ws://", 1);
+    let (mut feed, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("connect feed");
+    let mut next = async || -> ScreenFeedFrame {
+        let message = tokio::time::timeout(Duration::from_secs(5), feed.next())
+            .await
+            .expect("a frame in time")
+            .expect("open")
+            .expect("frame");
+        let Message::Text(text) = message else { panic!("not text: {message:?}") };
+        serde_json::from_str(&text).expect("frame json")
+    };
+    // The current state arrives on connect.
+    assert_eq!(
+        next().await,
+        ScreenFeedFrame::ScreenColors {
+            playing: true,
+            title: Some("Dune: Part Two".into()),
+            color: None,
+        }
+    );
+
+    assert!(post(report(true, Some([200, 40, 30]))).await.wanted);
+    let ScreenFeedFrame::ScreenColors { color, .. } = next().await;
+    assert_eq!(color.as_deref(), Some("#c8281e"));
+
+    post(report(false, None)).await;
+    let ScreenFeedFrame::ScreenColors { playing, color, .. } = next().await;
+    assert!(!playing);
+    assert!(color.is_some(), "the color stays while paused");
+
+    // A sample whose size doesn't match is refused.
+    let mut bad = report(true, Some([1, 2, 3]));
+    bad.sample.as_mut().expect("sample").width = 5;
+    let r = relay.http.post(relay.url(SCREEN_PATH)).json(&bad).send().await.expect("bad report");
+    assert_eq!(r.status(), StatusCode::BAD_REQUEST);
+
+    drop(feed);
+    // The relay notices the listener left once the socket closes.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while post(report(false, None)).await.wanted {
+        assert!(Instant::now() < deadline, "listener never left");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    // Someone listens again later: the old color isn't replayed.
+    let (mut feed, _) = tokio_tungstenite::connect_async(&ws_url).await.expect("reconnect feed");
+    let message = tokio::time::timeout(Duration::from_secs(5), feed.next())
+        .await
+        .expect("a frame in time")
+        .expect("open")
+        .expect("frame");
+    let Message::Text(text) = message else { panic!("not text: {message:?}") };
+    let ScreenFeedFrame::ScreenColors { color, .. } = serde_json::from_str(&text).expect("frame json");
+    assert_eq!(color, None);
+}

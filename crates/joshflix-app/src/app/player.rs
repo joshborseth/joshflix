@@ -674,6 +674,11 @@ impl Controller {
             .countdown_from
             .is_some_and(|from| from.elapsed() >= Duration::from_secs(COUNTDOWN_SECS) && !p.paused);
         let save_due = p.video_shown && p.last_save.elapsed() >= SAVE_EVERY && !p.paused;
+        // For the house lights (through the relay); buffering doesn't count as a pause.
+        let (name, episode) =
+            super::video_title(&p.request.context.name, &p.request.video, p.request.context.episode_title.as_deref());
+        let title = if episode.is_empty() { name } else { format!("{name} · {episode}") };
+        crate::screen_colors::set_now_playing(p.started && !p.paused && p.error.is_none(), Some(&title));
         if countdown_done {
             self.play_next();
             return;
@@ -760,6 +765,7 @@ impl Controller {
         if let Some(player) = self.video.player() {
             let _ = player.stop();
         }
+        crate::screen_colors::set_now_playing(false, None);
         if self.player.take().is_some() {
             self.platform.keep_screen_on(false);
             if self.settings.frame_rate_matching {

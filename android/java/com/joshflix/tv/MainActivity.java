@@ -3,13 +3,16 @@ package com.joshflix.tv;
 import android.app.NativeActivity;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
+import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Process;
 import android.util.Log;
+import android.view.PixelCopy;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
@@ -21,6 +24,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * NativeActivity with two stacked surfaces instead of one window surface.
@@ -79,6 +84,21 @@ public class MainActivity extends NativeActivity {
     private static int videoHeight;
     private static boolean listening;
 
+    /**
+     * Surfaces for {@link #sampleScreen}: mpv's video surface, and the UI's
+     * (NativeActivity's). Cleared under {@link #SAMPLE_LOCK} before a surface
+     * is released, so no copy reads a released surface.
+     */
+    private static volatile Surface sampleVideoSurface;
+    private static volatile Surface sampleUiSurface;
+    /** Held around each copy and while a sampled surface goes away. Never with MainActivity.class inside. */
+    private static final Object SAMPLE_LOCK = new Object();
+    /** Runs PixelCopy callbacks; created on first use. */
+    private static final Object COPY_LOCK = new Object();
+    private static Handler copyHandler;
+    /** How long {@link #sampleScreen} waits for a copy. */
+    private static final long COPY_TIMEOUT_MS = 500;
+
     private final Handler handler = new Handler(Looper.getMainLooper());
     private FrameLayout layers;
     private SurfaceView videoView;
@@ -94,6 +114,8 @@ public class MainActivity extends NativeActivity {
             listening = false;
             videoSurface = null;
         }
+        sampleVideoSurface = null;
+        sampleUiSurface = null;
         filesDir = getFilesDir();
         appVersionCode = versionCode();
         boolean layer = decideLayering();
@@ -194,6 +216,7 @@ public class MainActivity extends NativeActivity {
                         return;
                     }
                     videoSurface = holder.getSurface();
+                    sampleVideoSurface = videoSurface;
                     videoWidth = width;
                     videoHeight = height;
                     if (listening) {
@@ -211,6 +234,9 @@ public class MainActivity extends NativeActivity {
                         return;
                     }
                     videoSurface = null;
+                    synchronized (SAMPLE_LOCK) {
+                        sampleVideoSurface = null;
+                    }
                     if (listening) {
                         nativeVideoSurface(null, 0, 0);
                     }
@@ -235,6 +261,79 @@ public class MainActivity extends NativeActivity {
     protected void onPause() {
         resumed = false;
         super.onPause();
+    }
+
+    // The UI's surface (the layered UI view, or the window), for sampleScreen.
+    // Recorded before NativeActivity sees each change.
+
+    @Override
+    public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        if (current == this) {
+            sampleUiSurface = holder.getSurface();
+        }
+        super.surfaceChanged(holder, format, width, height);
+    }
+
+    @Override
+    public void surfaceDestroyed(SurfaceHolder holder) {
+        if (current == this) {
+            synchronized (SAMPLE_LOCK) {
+                sampleUiSurface = null;
+            }
+        }
+        super.surfaceDestroyed(holder);
+    }
+
+    /**
+     * Called by the native side, off the main thread: the picture on screen
+     * scaled down to {@code width} x {@code height}, as ARGB pixels, or null
+     * when it can't be read right now. Reads mpv's own surface when the
+     * native side says video is drawn there ({@code videoSurface}), otherwise
+     * the UI surface that video is drawn into. PixelCopy scales on the GPU, so
+     * this costs a few small reads per call.
+     */
+    public static int[] sampleScreen(int width, int height, boolean videoSurface) {
+        if (Build.VERSION.SDK_INT < 24 || width <= 0 || height <= 0) {
+            return null;
+        }
+        try {
+            Bitmap bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888);
+            CountDownLatch done = new CountDownLatch(1);
+            int[] result = {PixelCopy.ERROR_UNKNOWN};
+            // Until the copy is done, the surface can't be released under it
+            // (surfaceDestroyed waits for this lock; at most COPY_TIMEOUT_MS).
+            synchronized (SAMPLE_LOCK) {
+                Surface source = videoSurface && layerState == 1 ? sampleVideoSurface : sampleUiSurface;
+                if (source == null || !source.isValid()) {
+                    return null;
+                }
+                PixelCopy.request(source, bitmap, status -> {
+                    result[0] = status;
+                    done.countDown();
+                }, copyHandler());
+                if (!done.await(COPY_TIMEOUT_MS, TimeUnit.MILLISECONDS) || result[0] != PixelCopy.SUCCESS) {
+                    return null;
+                }
+            }
+            int[] pixels = new int[width * height];
+            bitmap.getPixels(pixels, 0, width, 0, 0, width, height);
+            bitmap.recycle();
+            return pixels;
+        } catch (Throwable t) {
+            // The surface went away mid-copy, or this device can't copy it.
+            return null;
+        }
+    }
+
+    private static Handler copyHandler() {
+        synchronized (COPY_LOCK) {
+            if (copyHandler == null) {
+                HandlerThread thread = new HandlerThread("screen-copy");
+                thread.start();
+                copyHandler = new Handler(thread.getLooper());
+            }
+            return copyHandler;
+        }
     }
 
     /** Called by the native side: 0 while onCreate runs, then 1 (layered) or 2 (single surface). */

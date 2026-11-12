@@ -22,6 +22,7 @@ slint = { workspace = true, features = ["std", "compat-1-2", "renderer-femtovg"]
 tokio.workspace = true
 tracing.workspace = true
 qrcode.workspace = true
+base64.workspace = true
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 slint = { workspace = true, features = ["backend-winit"] }

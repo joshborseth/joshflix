@@ -233,6 +233,47 @@ fn call_activity_static(name: &str) {
     }
 }
 
+/// The picture on screen scaled to `width` × `height` as packed RGB, through
+/// `MainActivity.sampleScreen`, or `None` when it can't be read right now.
+/// Call from one long-lived thread: it stays attached to the JVM.
+pub fn sample_screen(width: u32, height: u32) -> Option<Vec<u8>> {
+    let class = state().class.clone()?;
+    let vm = VM.get()?;
+    let mut env = vm.attach_current_thread_permanently().ok()?;
+    let (w, h) = (i32::try_from(width).ok()?, i32::try_from(height).ok()?);
+    // A permanently attached thread never frees local references on its own.
+    let result = env.with_local_frame(8, |env| -> jni::errors::Result<Option<Vec<u8>>> {
+        let class = <&JClass>::from(class.as_obj());
+        let value = env
+            .call_static_method(
+                class,
+                "sampleScreen",
+                "(IIZ)[I",
+                &[JValue::Int(w), JValue::Int(h), JValue::Bool(u8::from(enabled()))],
+            )?
+            .l()?;
+        if value.is_null() {
+            return Ok(None);
+        }
+        let array = jni::objects::JIntArray::from(value);
+        let len = usize::try_from(env.get_array_length(&array)?).unwrap_or(0);
+        if len != width as usize * height as usize {
+            return Ok(None);
+        }
+        let mut pixels = vec![0i32; len];
+        env.get_int_array_region(&array, 0, &mut pixels)?;
+        Ok(Some(crate::screen_colors::argb_to_rgb(&pixels)))
+    });
+    match result {
+        Ok(picture) => picture,
+        Err(e) => {
+            let message = describe(&mut env, e);
+            tracing::debug!("MainActivity.sampleScreen: {message}");
+            None
+        }
+    }
+}
+
 /// Call after each UI frame. The first one tells `MainActivity` that the UI
 /// surface works; without that it gives up on layered surfaces after 15 s.
 pub fn ui_shown() {

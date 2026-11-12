@@ -50,6 +50,7 @@ async fn run() -> Result<(), String> {
 
     let state = AppState::new(config).map_err(|e| format!("cannot build HTTP client: {e}"))?;
     state.spawn_sweeper(Duration::from_secs(30));
+    state.spawn_screen_watchdog();
 
     let listener = tokio::net::TcpListener::bind(bind)
         .await

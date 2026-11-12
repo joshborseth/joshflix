@@ -12,7 +12,7 @@ A native Android TV app for movies and shows, written entirely in Rust. It takes
 - **Titles and artwork:** Cinemeta (Stremio's keyless metadata service).
 - **Sources:** ElfHosted's public Comet with your Real-Debrid key. Cached sources (⚡) start instantly through Comet's redirect. Uncached ones resolve on the TV with live Real-Debrid download progress.
 - **Subtitles:** the file's own tracks plus Stremio's keyless OpenSubtitles service.
-- **Key pairing and updates:** a small private relay on the dev box's home network (`crates/joshflix-relay`).
+- **Key pairing, updates and screen colors:** a small private relay on the dev box's home network (`crates/joshflix-relay`).
 
 ## Features
 
@@ -34,6 +34,7 @@ Screenshots of the first desktop build are in [docs/screenshots](docs/screenshot
   - **Frame-rate matching** on Android 11 and later.
   - **Next episode:** a card in the last minute ("Next Episode", "Season 3 Finale · Up next", "Final Episode") with a 10-second autoplay that picks the same release family.
 - **Remote.** Play/pause, rewind, fast-forward, next, captions and audio-track keys work in the player, and the Search key opens Search from anywhere. Back steps back through screens and leaves the app from Home.
+- **House lights.** While a video plays, the lights can follow the colors on screen. About once a second the TV reads a 48×27 copy of the picture (Android's PixelCopy, scaled on the GPU) and posts it to the relay. The relay finds the one color the picture reads as and streams it to the lights app, which paints a group of bulbs that color. The relay sends a new color only after the picture's color has clearly changed and held for 1.5 seconds, so cuts and flashes don't flicker the bulbs. The TV reads the picture only while the lights app listens. Turn it on in the lights app under Automations → Screen colors.
 - **Settings.** Real-Debrid account (change or remove key), playback toggles (including video decoding mode), subtitle language and size, source filters and About with a self-updater.
 
 ## Repository layout
@@ -44,7 +45,7 @@ Screenshots of the first desktop build are in [docs/screenshots](docs/screenshot
 | `crates/joshflix-core` | Domain logic with no UI: Cinemeta, Comet, Real-Debrid, OpenSubtitles, release parsing and ranking, redb storage, relay and update clients, artwork cache. |
 | `crates/joshflix-player` | Our own libmpv FFI (loaded at runtime), the OpenGL render bridge, and attaching mpv to an Android surface. |
 | `crates/joshflix-protocol` | Wire types shared by the app and the relay. |
-| `crates/joshflix-relay` | The private pairing and update server ([deploy/README.md](deploy/README.md)). |
+| `crates/joshflix-relay` | The private pairing, update, TV log and screen colors server ([deploy/README.md](deploy/README.md)). |
 | `xtask` | `cargo xtask`: APK builds without Gradle, install and run over adb, publishing updates ([android/README.md](android/README.md)). |
 | `android/` | Manifest, resources, `version.toml`. |
 
@@ -108,4 +109,5 @@ TVs check the relay from Settings → About, and automatically on launch. They d
 
 - The Real-Debrid key is stored only on the TV (app-private storage). It is sent to Real-Debrid, and to ElfHosted's Comet as part of its config URL, because Comet resolves cached streams for you.
 - The relay never stores keys. It holds a key in memory until the TV collects it, then forgets it. It only answers LAN and Tailscale addresses.
+- While a video plays, the TV tells the relay its title and whether it is playing. While the lights app listens, it also sends a 48×27 copy of the picture about once a second. The relay keeps only the color and the title, in memory.
 - Nothing else leaves the TV except requests to Cinemeta, OpenSubtitles and the artwork CDN.

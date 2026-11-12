@@ -1,6 +1,6 @@
 //! Wire types shared by the Joshflix TV app and the private relay server.
 //!
-//! The relay runs only on the dev box network. It does two jobs:
+//! The relay runs only on the dev box network. Its jobs:
 //!
 //! 1. **Real-Debrid pairing.** The TV creates a pairing, shows a QR code that
 //!    points to the relay's phone page, and long-polls until the phone submits
@@ -8,6 +8,9 @@
 //!    then forgotten.
 //! 2. **App updates.** The relay serves the latest signed APKs and a manifest
 //!    the TV checks from Settings → About.
+//! 3. **TV logs.** TVs without adb post their log lines.
+//! 4. **Screen colors.** While a video plays, the TV posts a tiny copy of the
+//!    picture; the relay streams the color it reads as to the house lights.
 //!
 //! Endpoints (all JSON unless noted):
 //!
@@ -22,6 +25,8 @@
 //! | `GET` | [`UPDATE_MANIFEST_PATH`] | none | → [`UpdateManifest`] (404 when nothing is published) |
 //! | `GET` | `/updates/{file}` | none | → APK bytes |
 //! | `POST` | [`LOGS_PATH`] | none | plain-text log lines (header `x-joshflix-device`) → 204 |
+//! | `POST` | [`SCREEN_PATH`] | none | [`ScreenReport`] → [`ScreenReportResponse`] |
+//! | `GET` | [`SCREEN_FEED_PATH`] | none | WebSocket of [`ScreenFeedFrame`] JSON text frames |
 //! | `GET` | `/healthz` | none | → `ok` |
 
 use serde::{Deserialize, Serialize};
@@ -32,6 +37,13 @@ pub const PAIRINGS_PATH: &str = "/api/v1/pairings";
 pub const UPDATE_MANIFEST_PATH: &str = "/api/v1/updates/latest";
 /// Path the TV posts its diagnostic log lines to.
 pub const LOGS_PATH: &str = "/api/v1/logs";
+/// Path the TV posts what plays and a tiny copy of the picture to.
+pub const SCREEN_PATH: &str = "/api/v1/screen";
+/// Read-only WebSocket with the screen's colors, for the house lights.
+pub const SCREEN_FEED_PATH: &str = "/api/v1/screen/feed";
+/// Size of the picture sample the TV sends (16:9).
+pub const SCREEN_SAMPLE_WIDTH: u32 = 48;
+pub const SCREEN_SAMPLE_HEIGHT: u32 = 27;
 /// Longest long-poll the relay honours, in seconds.
 pub const MAX_POLL_WAIT_SECS: u64 = 30;
 /// How long a pairing stays valid, in seconds.
@@ -159,6 +171,56 @@ pub fn is_valid_pairing_code(code: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+/// `POST /api/v1/screen`: what the TV is playing, and a tiny copy of the picture.
+///
+/// The TV posts whenever playback starts, pauses or stops, and while it plays:
+/// about once a second with a [`ScreenSample`] while the relay says someone
+/// wants the colors, otherwise every few seconds without one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenReport {
+    /// Video is playing (not paused, buffering or stopped).
+    pub playing: bool,
+    /// What plays, e.g. `"The Office · S2E4"`. `None` when nothing does.
+    #[serde(default)]
+    pub title: Option<String>,
+    #[serde(default)]
+    pub sample: Option<ScreenSample>,
+}
+
+/// The picture scaled down to `width` × `height`, as packed 8-bit RGB rows,
+/// base64 encoded (standard alphabet, padded).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenSample {
+    pub width: u32,
+    pub height: u32,
+    pub rgb: String,
+}
+
+/// Response to a [`ScreenReport`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScreenReportResponse {
+    /// Someone listens to the colors: send a [`ScreenSample`] about once a second.
+    pub wanted: bool,
+}
+
+/// One frame of the screen colors feed ([`SCREEN_FEED_PATH`]). Sent when a
+/// listener connects and after every change. Shaped like the music server's
+/// `/now-playing` frame, which the lights also follow.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "_tag")]
+pub enum ScreenFeedFrame {
+    ScreenColors {
+        /// Video is playing on the TV right now.
+        playing: bool,
+        /// What plays, or `None`.
+        title: Option<String>,
+        /// The one color the picture reads as, lowercase `#rrggbb`. `None`
+        /// when it has no usable color (dark or grey): the lights should hold
+        /// theirs.
+        color: Option<String>,
+    },
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,6 +240,26 @@ mod tests {
         assert_eq!(manifest.apk_for(&["armeabi-v7a", "armeabi"]).unwrap().path, "/b");
         assert_eq!(manifest.apk_for(&["arm64-v8a", "armeabi-v7a"]).unwrap().path, "/a");
         assert!(manifest.apk_for(&["x86_64"]).is_none());
+    }
+
+    #[test]
+    fn screen_frames_carry_a_tag() {
+        let frame = ScreenFeedFrame::ScreenColors {
+            playing: true,
+            title: Some("Dune".into()),
+            color: Some("#c8742f".into()),
+        };
+        assert_eq!(
+            serde_json::to_string(&frame).unwrap(),
+            r##"{"_tag":"ScreenColors","playing":true,"title":"Dune","color":"#c8742f"}"##
+        );
+        let dark = ScreenFeedFrame::ScreenColors { playing: false, title: None, color: None };
+        assert_eq!(
+            serde_json::to_string(&dark).unwrap(),
+            r#"{"_tag":"ScreenColors","playing":false,"title":null,"color":null}"#
+        );
+        let report: ScreenReport = serde_json::from_str(r#"{"playing":false}"#).unwrap();
+        assert_eq!(report, ScreenReport { playing: false, title: None, sample: None });
     }
 
     #[test]

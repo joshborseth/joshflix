@@ -1,7 +1,7 @@
 //! Private relay server for Joshflix.
 //!
 //! The relay runs on the dev box and is reachable only from the home LAN and
-//! the tailnet. It never needs to be exposed to the internet. It has two jobs,
+//! the tailnet. It never needs to be exposed to the internet. It has four jobs,
 //! both described by the wire contract in [`joshflix_protocol`]:
 //!
 //! 1. **Real-Debrid key pairing.** Typing a 40-character API key with a TV
@@ -15,6 +15,9 @@
 //!    next to it from the data directory. `cargo xtask publish` writes them.
 //! 3. **Diagnostic logs.** TVs without adb post their log lines to [`logs`],
 //!    which appends them to `logs/tv.log` in the data directory.
+//! 4. **Screen colors.** While a video plays, the TV posts a tiny copy of the
+//!    picture to [`screen`], which streams the color it reads as
+//!    ([`palette`]) on a read-only WebSocket for the house lights.
 //!
 //! # Design
 //!
@@ -42,9 +45,11 @@
 pub mod logs;
 pub mod netguard;
 pub mod pairing;
+pub mod palette;
 pub mod phone_page;
 pub mod ratelimit;
 pub mod realdebrid;
+pub mod screen;
 pub mod updates;
 
 mod error;
@@ -58,7 +63,8 @@ use std::{
 
 use axum::{Router, middleware, routing::get};
 use joshflix_protocol::{
-    LOGS_PATH, MAX_POLL_WAIT_SECS, PAIRING_TTL_SECS, PAIRINGS_PATH, UPDATE_MANIFEST_PATH,
+    LOGS_PATH, MAX_POLL_WAIT_SECS, PAIRING_TTL_SECS, PAIRINGS_PATH, SCREEN_FEED_PATH, SCREEN_PATH,
+    UPDATE_MANIFEST_PATH,
 };
 
 pub use error::api_error;
@@ -172,6 +178,8 @@ struct Inner {
     submit_limiter: ratelimit::RateLimiter,
     /// Serializes appends to the TV log file.
     logs_lock: tokio::sync::Mutex<()>,
+    /// What plays on the TV and its colors.
+    screen: screen::Screen,
 }
 
 impl AppState {
@@ -184,6 +192,7 @@ impl AppState {
                 submit_limiter: ratelimit::RateLimiter::new(config.submit_limit),
                 pairings: Mutex::new(HashMap::new()),
                 logs_lock: tokio::sync::Mutex::new(()),
+                screen: screen::Screen::default(),
                 rd,
                 config,
             }),
@@ -211,6 +220,20 @@ impl AppState {
         if removed > 0 {
             tracing::debug!(removed, "swept expired pairings");
         }
+    }
+
+    /// Marks playback stopped every few seconds once the TV has gone quiet,
+    /// until the runtime shuts down.
+    pub fn spawn_screen_watchdog(&self) -> tokio::task::JoinHandle<()> {
+        let state = self.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(Duration::from_secs(5));
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                ticker.tick().await;
+                state.inner.screen.expire(std::time::Instant::now());
+            }
+        })
     }
 
     /// Runs [`AppState::sweep`] every `every` until the runtime shuts down.
@@ -252,6 +275,12 @@ pub fn router(state: AppState) -> Router {
             axum::routing::post(logs::upload)
                 .layer(axum::extract::DefaultBodyLimit::max(logs::MAX_BATCH_BYTES)),
         )
+        .route(
+            SCREEN_PATH,
+            axum::routing::post(screen::report)
+                .layer(axum::extract::DefaultBodyLimit::max(screen::MAX_REPORT_BYTES)),
+        )
+        .route(SCREEN_FEED_PATH, get(screen::feed))
         .fallback(|| async {
             api_error(
                 axum::http::StatusCode::NOT_FOUND,
