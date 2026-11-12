@@ -1,0 +1,29 @@
+[Unit]
+Description=Joshflix relay (Real-Debrid pairing and app updates, LAN and tailnet only)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/joshflix-relay
+Environment=RUST_LOG=info
+Environment=JOSHFLIX_RELAY_BIND=0.0.0.0:8788
+# Optional overrides:
+# Environment=JOSHFLIX_RELAY_PUBLIC_URL=http://192.168.1.67:8788
+# Environment=JOSHFLIX_RELAY_DATA=%h/.local/share/joshflix-relay
+Restart=on-failure
+RestartSec=2s
+# Long-polls last up to 30 s; give them time to finish on stop.
+TimeoutStopSec=40s
+
+# Hardening that works in a user unit.
+NoNewPrivileges=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+SystemCallArchitectures=native
+UMask=0077
+
+[Install]
+WantedBy=default.target

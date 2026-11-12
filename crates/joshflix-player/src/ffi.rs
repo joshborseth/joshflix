@@ -157,7 +157,7 @@ impl Mpv {
         let mut errors = Vec::new();
         for name in candidates {
             // SAFETY: loading libmpv runs its (trivial) initializers only.
-            match unsafe { Library::new(name) } {
+            match unsafe { Library::new(*name) } {
                 Ok(lib) => {
                     // SAFETY: symbol signatures match mpv's client.h / render.h for API 2.x.
                     let mpv = unsafe { Self::resolve(lib) }.map_err(|e| format!("{name}: {e}"))?;

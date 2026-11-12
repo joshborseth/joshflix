@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#0B0D12">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex, nofollow">
+<title>Joshflix · Send key to TV</title>
+<style nonce="{{NONCE}}">
+:root {
+  --bg: #0B0D12;
+  --surface: #151923;
+  --border: #252B38;
+  --text: #F2F4F8;
+  --muted: #9AA3B2;
+  --accent: #3D8BFF;
+  --success: #34D399;
+  --error: #F87171;
+  --radius: 14px;
+}
+*, *::before, *::after { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body {
+  margin: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+  padding: max(24px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right)) max(24px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+}
+main { max-width: 440px; margin: 0 auto; }
+.eyebrow {
+  margin: 8px 0 6px;
+  color: var(--accent);
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+}
+h1 { margin: 0 0 8px; font-size: 26px; line-height: 1.2; font-weight: 700; letter-spacing: -0.01em; }
+.lede { margin: 0 0 24px; color: var(--muted); }
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 20px 16px;
+}
+.status { display: flex; gap: 12px; align-items: flex-start; margin: 0; }
+.spinner {
+  flex: none;
+  width: 20px; height: 20px; margin-top: 2px;
+  border-radius: 50%;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation: none; } }
+label { display: block; font-weight: 600; margin-bottom: 8px; }
+.field { display: flex; gap: 8px; }
+input {
+  flex: 1;
+  min-width: 0;
+  height: 48px;
+  padding: 0 14px;
+  background: var(--bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 16px; /* 16px keeps iOS Safari from zooming */
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+input::placeholder { color: var(--muted); font-family: system-ui, -apple-system, sans-serif; }
+button {
+  font: inherit;
+  cursor: pointer;
+  border-radius: 10px;
+  -webkit-tap-highlight-color: transparent;
+}
+.toggle {
+  flex: none;
+  min-width: 68px;
+  height: 48px;
+  padding: 0 12px;
+  background: transparent;
+  color: var(--text);
+  border: 1px solid var(--border);
+  font-size: 15px;
+  font-weight: 600;
+}
+.primary {
+  display: block;
+  width: 100%;
+  height: 52px;
+  margin-top: 16px;
+  background: var(--accent);
+  color: #0B0D12;
+  border: 0;
+  font-size: 17px;
+  font-weight: 700;
+}
+.primary:disabled { opacity: 0.7; cursor: progress; }
+.secondary {
+  margin-top: 12px;
+  height: 44px;
+  padding: 0 16px;
+  background: transparent;
+  color: var(--accent);
+  border: 1px solid var(--border);
+  font-weight: 600;
+}
+input:focus-visible, button:focus-visible, a:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+input:focus-visible { border-color: var(--accent); }
+.help { margin: 12px 0 0; color: var(--muted); font-size: 15px; }
+a { color: var(--accent); text-underline-offset: 2px; }
+.error { margin: 12px 0 0; color: var(--error); font-weight: 600; }
+.success {
+  background: rgba(52, 211, 153, 0.10);
+  border-color: rgba(52, 211, 153, 0.45);
+}
+.success-title { margin: 0 0 4px; color: var(--success); font-size: 20px; font-weight: 700; }
+.success p { margin: 0; }
+.muted { color: var(--muted); }
+</style>
+</head>
+<body data-code="{{CODE}}">
+<main>
+  <p class="eyebrow">JOSHFLIX TV</p>
+  <h1>Real-Debrid API key</h1>
+  <p class="lede">This key goes only to the TV that showed the QR code. Nothing is saved on the server.</p>
+
+  <section class="card" id="view-loading" aria-live="polite">
+    <p class="status"><span class="spinner" aria-hidden="true"></span><span>Checking this code…</span></p>
+  </section>
+
+  <section class="card" id="view-offline" hidden>
+    <p class="error" id="offline-text">Couldn't reach the dev box. Make sure your phone is on the home Wi-Fi or the tailnet.</p>
+    <button type="button" class="secondary" id="retry">Try again</button>
+  </section>
+
+  <section class="card" id="view-missing" hidden>
+    <p class="status">This code is invalid or expired. Go back to the TV and scan a new QR code.</p>
+  </section>
+
+  <section class="card" id="view-submitted" hidden>
+    <p class="status">This TV already received a key. You can go back to the TV.</p>
+  </section>
+
+  <form class="card" id="view-form" novalidate hidden>
+    <label for="api-key">API key</label>
+    <div class="field">
+      <input id="api-key" name="api_key" type="password" inputmode="text"
+        autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false"
+        placeholder="Paste your Real-Debrid API key" aria-describedby="key-help key-error">
+      <button type="button" class="toggle" id="toggle" aria-controls="api-key" aria-pressed="false">Show</button>
+    </div>
+    <p class="error" id="key-error" role="alert" hidden></p>
+    <button type="submit" class="primary" id="send">Send to TV</button>
+    <p class="help" id="key-help">Get your key at <a href="https://real-debrid.com/apitoken" target="_blank" rel="noopener noreferrer">real-debrid.com/apitoken</a></p>
+  </form>
+
+  <section class="card success" id="view-success" hidden aria-live="polite">
+    <p class="success-title">Sent!</p>
+    <p>Signed in to Real-Debrid as <strong id="rd-username"></strong>. <span class="muted">You can go back to the TV.</span></p>
+  </section>
+</main>
+<script nonce="{{NONCE}}">
+(function () {
+  "use strict";
+  var code = document.body.getAttribute("data-code") || "";
+  var api = "/api/v1/pairings/" + encodeURIComponent(code);
+  var views = ["loading", "offline", "missing", "submitted", "form", "success"];
+  var $ = function (id) { return document.getElementById(id); };
+  var input = $("api-key");
+  var toggle = $("toggle");
+  var send = $("send");
+  var errorBox = $("key-error");
+
+  function show(name) {
+    views.forEach(function (v) { $("view-" + v).hidden = v !== name; });
+  }
+
+  function setError(text) {
+    errorBox.textContent = text || "";
+    errorBox.hidden = !text;
+  }
+
+  function load() {
+    if (!code) { show("missing"); return; }
+    show("loading");
+    fetch(api + "/status", { cache: "no-store", credentials: "omit" })
+      .then(function (r) { return r.json(); })
+      .then(function (status) {
+        if (status === "pending") { show("form"); input.focus(); }
+        else if (status === "submitted") { show("submitted"); }
+        else { show("missing"); }
+      })
+      .catch(function () { show("offline"); });
+  }
+
+  toggle.addEventListener("click", function () {
+    var reveal = input.type === "password";
+    input.type = reveal ? "text" : "password";
+    toggle.textContent = reveal ? "Hide" : "Show";
+    toggle.setAttribute("aria-pressed", String(reveal));
+    toggle.setAttribute("aria-label", reveal ? "Hide API key" : "Show API key");
+  });
+  toggle.setAttribute("aria-label", "Show API key");
+
+  input.addEventListener("input", function () { setError(""); });
+
+  $("retry").addEventListener("click", load);
+
+  $("view-form").addEventListener("submit", function (event) {
+    event.preventDefault();
+    var key = input.value.trim();
+    if (!key) { setError("Paste your API key first."); input.focus(); return; }
+    setError("");
+    send.disabled = true;
+    send.textContent = "Checking with Real-Debrid…";
+    fetch(api + "/key", {
+      method: "POST",
+      cache: "no-store",
+      credentials: "omit",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: key })
+    })
+      .then(function (r) {
+        return r.json().then(
+          function (body) { return { ok: r.ok, status: r.status, body: body || {} }; },
+          function () { return { ok: false, status: r.status, body: {} }; }
+        );
+      })
+      .then(function (res) {
+        if (res.ok && typeof res.body.username === "string") {
+          input.value = "";
+          $("rd-username").textContent = res.body.username;
+          show("success");
+          return;
+        }
+        if (res.status === 404) { show("missing"); return; }
+        if (res.body.code === "already_submitted") {
+          show("submitted");
+          return;
+        }
+        setError(typeof res.body.message === "string" && res.body.message
+          ? res.body.message
+          : "Something went wrong. Try again.");
+      })
+      .catch(function () {
+        setError("Couldn't reach the dev box. Check your connection and try again.");
+      })
+      .then(function () {
+        send.disabled = false;
+        send.textContent = "Send to TV";
+      });
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,478 @@
+// Joshflix root window. Rust owns state and focus; every key goes to Rust.
+
+import { Theme, Icons } from "theme.slint";
+import { Screen, Poster, Row, Hero, EpisodeCard, DetailButton, SourceItem, TrackItem, SettingItem, NavItem, KeyCap } from "types.slint";
+import { Toast } from "components.slint";
+import { Rail } from "rail.slint";
+import { BrowseScreen } from "browse.slint";
+import { DetailScreen } from "detail.slint";
+import { SourcesSheet, ResolveOverlay } from "sources.slint";
+import { PlayerOverlay } from "player.slint";
+import { SearchScreen } from "search.slint";
+import { DiscoverScreen, MyListScreen } from "grid.slint";
+import { SettingsScreen } from "settings.slint";
+import { OnboardingScreen, PairingPanel } from "onboarding.slint";
+
+export { Theme, Icons, Screen, Poster, Row, Hero, EpisodeCard, DetailButton, SourceItem, TrackItem, SettingItem, NavItem, KeyCap }
+
+// Per-screen state lives in globals so Rust can set it without touching the tree.
+export global RailState {
+    in property <[NavItem]> items;
+    in property <int> selected;
+    in property <int> focused-index;
+    in property <bool> expanded;
+}
+
+export global BrowseState {
+    in property <Hero> hero;
+    in property <image> backdrop-a;
+    in property <image> backdrop-b;
+    in property <bool> show-b;
+    in property <[Row]> rows;
+    in property <int> focused-row;
+    in property <length> scroll-y;
+    in property <string> section-title;
+}
+
+export global DetailState {
+    in property <bool> loading;
+    in property <string> title;
+    in property <image> logo;
+    in property <bool> has-logo;
+    in property <image> backdrop;
+    in property <string> meta;
+    in property <string> rating;
+    in property <string> description;
+    in property <string> credits;
+    in property <string> status-line;
+    in property <[DetailButton]> buttons;
+    in property <bool> is-series;
+    in property <[string]> seasons;
+    in property <int> selected-season;
+    in property <[EpisodeCard]> episodes;
+    in property <string> episode-preview;
+    in property <int> zone;
+    in property <int> button-index;
+    in property <int> season-index;
+    in property <int> episode-index;
+}
+
+export global SourcesState {
+    in property <bool> open;
+    in property <string> heading;
+    in property <string> subheading;
+    in property <bool> loading;
+    in property <string> message;
+    in property <string> message-action;
+    in property <[SourceItem]> sources;
+    in property <int> focused-index;
+    in property <string> footer;
+    // Resolve overlay
+    in property <bool> resolving;
+    in property <string> resolve-title;
+    in property <string> resolve-status;
+    in property <float> resolve-progress: -1;
+    in property <string> resolve-hint;
+    in property <string> resolve-error;
+}
+
+export global PlayerState {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> overlay-visible;
+    in property <bool> paused;
+    in property <bool> buffering;
+    in property <string> buffering-text;
+    in property <float> progress;
+    in property <string> position-text;
+    in property <string> duration-text;
+    in property <string> remaining-text;
+    in property <bool> seeking;
+    in property <float> seek-progress;
+    in property <string> seek-text;
+    in property <int> zone;
+    in property <int> control-index;
+    in property <bool> night-mode;
+    in property <bool> has-next;
+    in property <bool> subtitles-on;
+    in property <bool> menu-open;
+    in property <string> menu-title;
+    in property <[TrackItem]> menu-options;
+    in property <int> menu-index;
+    in property <bool> next-visible;
+    in property <string> next-header;
+    in property <string> next-title;
+    in property <int> next-countdown: -1;
+    in property <bool> next-focused;
+    in property <string> error;
+}
+
+export global SearchState {
+    in property <string> query;
+    in property <[KeyCap]> keys;
+    in property <int> key-index;
+    in property <[Row]> rows;
+    in property <int> focused-row;
+    in property <bool> keyboard-active: true;
+    in property <bool> searching;
+    in property <string> hint;
+}
+
+export global DiscoverState {
+    in property <[string]> filters;
+    in property <[Poster]> items;
+    in property <bool> loading;
+    in property <int> zone;
+    in property <int> filter-index;
+    in property <int> grid-index;
+    in property <bool> picker-open;
+    in property <string> picker-title;
+    in property <[TrackItem]> picker-options;
+    in property <int> picker-index;
+}
+
+export global MyListState {
+    in property <Row> continue-row;
+    in property <[Poster]> items;
+    in property <int> zone;
+    in property <int> grid-index;
+}
+
+export global SettingsState {
+    in property <[NavItem]> sections;
+    in property <int> section-index;
+    in property <[SettingItem]> items;
+    in property <int> item-index;
+    in property <int> zone;
+    in property <string> section-title;
+    in property <string> section-blurb;
+    in property <float> busy-progress: -1;
+    // Real-Debrid key change dialog
+    in property <bool> pairing-open;
+}
+
+export global PairingState {
+    in property <image> qr;
+    in property <bool> has-qr;
+    in property <string> url;
+    in property <int> state;
+    in property <string> status;
+    in property <string> account;
+    in property <bool> typing;
+    in property <string> typed;
+    in property <[KeyCap]> keys;
+    in property <int> key-index;
+    in property <[DetailButton]> actions;
+    in property <int> action-index;
+}
+
+export global OnboardingState {
+    in property <int> step;
+    in property <bool> leaving;
+}
+
+export global Dialog {
+    in property <bool> open;
+    in property <string> title;
+    in property <string> body;
+    in property <[DetailButton]> buttons;
+    in property <int> index;
+}
+
+export global AppState {
+    in property <Screen> screen: Screen.onboarding;
+    in property <bool> content-active: true;   // false when the rail has focus
+    in property <string> toast;
+    in property <bool> toast-shown;
+    in property <bool> video-visible;          // draw video under the UI
+    callback key(string) -> bool;
+}
+
+import { PillButton } from "components.slint";
+
+component DialogBox inherits Rectangle {
+    background: #05060acc;
+    Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: min(460px, root.width - 80px);
+        height: box.preferred-height + 44px;
+        border-radius: Theme.radius-lg;
+        background: Theme.bg-raised;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #000000cc;
+        box := VerticalLayout {
+            padding: 22px;
+            spacing: 10px;
+            Text {
+                text: Dialog.title;
+                color: Theme.text;
+                font-size: Theme.text-xl;
+                font-weight: 800;
+                wrap: word-wrap;
+            }
+            Text {
+                text: Dialog.body;
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 6px; }
+            HorizontalLayout {
+                spacing: 10px;
+                alignment: end;
+                for button[i] in Dialog.buttons: PillButton {
+                    label: button.label;
+                    icon: button.icon;
+                    primary: button.primary;
+                    focused: i == Dialog.index;
+                }
+            }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: "Joshflix";
+    preferred-width: 960px;
+    preferred-height: 540px;
+    background: AppState.video-visible ? #000000 : Theme.bg;
+    default-font-family: "Inter";
+    default-font-size: Theme.text-md;
+    forward-focus: keys;
+
+    property <bool> in-shell: AppState.screen == Screen.browse || AppState.screen == Screen.search
+        || AppState.screen == Screen.discover || AppState.screen == Screen.mylist || AppState.screen == Screen.settings;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow) { return AppState.key(event.repeat ? "left+" : "left") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.RightArrow) { return AppState.key(event.repeat ? "right+" : "right") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.UpArrow) { return AppState.key("up") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.DownArrow) { return AppState.key("down") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.Return || (event.text == Key.Space && AppState.screen == Screen.player)) { return AppState.key("ok") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.Escape || event.text == Key.Back) { return AppState.key("back") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.Backspace) { return AppState.key("backspace") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.Menu) { return AppState.key("menu") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.PageUp) { return AppState.key("pageup") ? EventResult.accept : EventResult.reject; }
+            if (event.text == Key.PageDown) { return AppState.key("pagedown") ? EventResult.accept : EventResult.reject; }
+            if (event.text != "" && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta) {
+                return AppState.key("char:" + event.text) ? EventResult.accept : EventResult.reject;
+            }
+            EventResult.reject
+        }
+    }
+
+    // ---- Screens ----
+    if AppState.screen == Screen.onboarding: OnboardingScreen {
+        step: OnboardingState.step;
+        leaving: OnboardingState.leaving;
+        qr: PairingState.qr;
+        has-qr: PairingState.has-qr;
+        url: PairingState.url;
+        pair-state: PairingState.state;
+        pair-status: PairingState.status;
+        account: PairingState.account;
+        typing: PairingState.typing;
+        typed: PairingState.typed;
+        keys: PairingState.keys;
+        key-index: PairingState.key-index;
+        actions: PairingState.actions;
+        action-index: PairingState.action-index;
+    }
+
+    if AppState.screen == Screen.browse: BrowseScreen {
+        hero: BrowseState.hero;
+        backdrop-a: BrowseState.backdrop-a;
+        backdrop-b: BrowseState.backdrop-b;
+        show-b: BrowseState.show-b;
+        rows: BrowseState.rows;
+        focused-row: BrowseState.focused-row;
+        scroll-y: BrowseState.scroll-y;
+        section-title: BrowseState.section-title;
+        active: AppState.content-active;
+    }
+
+    if AppState.screen == Screen.search: SearchScreen {
+        query: SearchState.query;
+        keys: SearchState.keys;
+        key-index: SearchState.key-index;
+        rows: SearchState.rows;
+        focused-row: SearchState.focused-row;
+        keyboard-active: SearchState.keyboard-active;
+        searching: SearchState.searching;
+        hint: SearchState.hint;
+        active: AppState.content-active;
+    }
+
+    if AppState.screen == Screen.discover: DiscoverScreen {
+        filters: DiscoverState.filters;
+        items: DiscoverState.items;
+        loading: DiscoverState.loading;
+        zone: DiscoverState.zone;
+        filter-index: DiscoverState.filter-index;
+        grid-index: DiscoverState.grid-index;
+        picker-open: DiscoverState.picker-open;
+        picker-title: DiscoverState.picker-title;
+        picker-options: DiscoverState.picker-options;
+        picker-index: DiscoverState.picker-index;
+        active: AppState.content-active;
+    }
+
+    if AppState.screen == Screen.mylist: MyListScreen {
+        continue-row: MyListState.continue-row;
+        items: MyListState.items;
+        zone: MyListState.zone;
+        grid-index: MyListState.grid-index;
+        active: AppState.content-active;
+    }
+
+    if AppState.screen == Screen.settings: SettingsScreen {
+        sections: SettingsState.sections;
+        section-index: SettingsState.section-index;
+        items: SettingsState.items;
+        item-index: SettingsState.item-index;
+        zone: SettingsState.zone;
+        section-title: SettingsState.section-title;
+        section-blurb: SettingsState.section-blurb;
+        busy-progress: SettingsState.busy-progress;
+        active: AppState.content-active && !SettingsState.pairing-open;
+    }
+
+    if AppState.screen == Screen.detail || (AppState.screen == Screen.player && !AppState.video-visible): DetailScreen {
+        loading: DetailState.loading;
+        title: DetailState.title;
+        logo: DetailState.logo;
+        has-logo: DetailState.has-logo;
+        backdrop: DetailState.backdrop;
+        meta: DetailState.meta;
+        rating: DetailState.rating;
+        description: DetailState.description;
+        credits: DetailState.credits;
+        status-line: DetailState.status-line;
+        buttons: DetailState.buttons;
+        is-series: DetailState.is-series;
+        seasons: DetailState.seasons;
+        selected-season: DetailState.selected-season;
+        episodes: DetailState.episodes;
+        episode-preview: DetailState.episode-preview;
+        zone: DetailState.zone;
+        button-index: DetailState.button-index;
+        season-index: DetailState.season-index;
+        episode-index: DetailState.episode-index;
+    }
+
+    if AppState.screen == Screen.player && AppState.video-visible: PlayerOverlay {
+        title: PlayerState.title;
+        subtitle: PlayerState.subtitle;
+        overlay-visible: PlayerState.overlay-visible;
+        paused: PlayerState.paused;
+        buffering: PlayerState.buffering;
+        buffering-text: PlayerState.buffering-text;
+        progress: PlayerState.progress;
+        position-text: PlayerState.position-text;
+        duration-text: PlayerState.duration-text;
+        remaining-text: PlayerState.remaining-text;
+        seeking: PlayerState.seeking;
+        seek-progress: PlayerState.seek-progress;
+        seek-text: PlayerState.seek-text;
+        zone: PlayerState.zone;
+        control-index: PlayerState.control-index;
+        night-mode: PlayerState.night-mode;
+        has-next: PlayerState.has-next;
+        subtitles-on: PlayerState.subtitles-on;
+        menu-open: PlayerState.menu-open;
+        menu-title: PlayerState.menu-title;
+        menu-options: PlayerState.menu-options;
+        menu-index: PlayerState.menu-index;
+        next-visible: PlayerState.next-visible;
+        next-header: PlayerState.next-header;
+        next-title: PlayerState.next-title;
+        next-countdown: PlayerState.next-countdown;
+        next-focused: PlayerState.next-focused;
+        error: PlayerState.error;
+    }
+
+    if root.in-shell: Rail {
+        x: 0;
+        y: 0;
+        height: root.height;
+        items: RailState.items;
+        selected: RailState.selected;
+        focused-index: RailState.focused-index;
+        expanded: RailState.expanded;
+    }
+
+    // ---- Overlays ----
+    if AppState.screen == Screen.detail || AppState.screen == Screen.player: SourcesSheet {
+        open: SourcesState.open;
+        heading: SourcesState.heading;
+        subheading: SourcesState.subheading;
+        loading: SourcesState.loading;
+        message: SourcesState.message;
+        message-action: SourcesState.message-action;
+        sources: SourcesState.sources;
+        focused-index: SourcesState.focused-index;
+        footer: SourcesState.footer;
+        visible: SourcesState.open || self.opacity > 0;
+    }
+
+    if SourcesState.resolving: ResolveOverlay {
+        open: SourcesState.resolving;
+        title: SourcesState.resolve-title;
+        status: SourcesState.resolve-status;
+        progress: SourcesState.resolve-progress;
+        hint: SourcesState.resolve-hint;
+        error: SourcesState.resolve-error;
+    }
+
+    if SettingsState.pairing-open && AppState.screen == Screen.settings: Rectangle {
+        background: #05060af2;
+        VerticalLayout {
+            x: (root.width - self.width) / 2;
+            y: Theme.safe-y + 10px;
+            width: min(680px, root.width - 2 * Theme.safe-x);
+            spacing: 8px;
+            alignment: start;
+            Text {
+                text: "Change Real-Debrid key";
+                color: Theme.text;
+                font-size: Theme.text-2xl;
+                font-weight: 900;
+            }
+            Text {
+                text: "Scan the code with your phone and paste your key, or type it with the remote. Press Back to keep your current key.";
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 10px; }
+            PairingPanel {
+                qr: PairingState.qr;
+                has-qr: PairingState.has-qr;
+                url: PairingState.url;
+                state: PairingState.state;
+                status: PairingState.status;
+                account: PairingState.account;
+                typing: PairingState.typing;
+                typed: PairingState.typed;
+                keys: PairingState.keys;
+                key-index: PairingState.key-index;
+                actions: PairingState.actions;
+                action-index: PairingState.action-index;
+                active: true;
+            }
+        }
+    }
+
+    if Dialog.open: DialogBox { }
+
+    Toast {
+        x: root.width - self.width - Theme.safe-x;
+        y: root.height - self.height - Theme.safe-y;
+        message: AppState.toast;
+        shown: AppState.toast-shown;
+    }
+}

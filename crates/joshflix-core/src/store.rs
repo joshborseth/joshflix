@@ -102,6 +102,8 @@ pub struct Progress {
     pub poster: Option<String>,
     pub background: Option<String>,
     pub thumbnail: Option<String>,
+    #[serde(default)]
+    pub logo: Option<String>,
     pub position_secs: f64,
     pub duration_secs: f64,
     pub updated_at: u64,
@@ -332,6 +334,7 @@ mod tests {
             poster: None,
             background: None,
             thumbnail: None,
+            logo: None,
             position_secs: pos,
             duration_secs: dur,
             updated_at: 0,

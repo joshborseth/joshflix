@@ -1,0 +1,184 @@
+import { Theme, Icons } from "theme.slint";
+import { NavItem, SettingItem } from "types.slint";
+import { ProgressBar } from "components.slint";
+
+component SettingRow inherits Rectangle {
+    in property <SettingItem> item;
+    in property <bool> focused;
+    height: item.hint != "" ? 58px : 44px;
+    border-radius: Theme.radius;
+    background: focused ? Theme.surface-3 : Theme.surface;
+    border-width: focused ? 2px : 0px;
+    border-color: item.kind == "danger" ? Theme.danger : Theme.accent;
+    animate background { duration: Theme.fast; }
+
+    VerticalLayout {
+        x: 16px;
+        width: root.width - 32px - 150px;
+        alignment: center;
+        spacing: 3px;
+        Text {
+            text: root.item.label;
+            color: root.item.kind == "danger" ? Theme.danger : Theme.text;
+            font-size: Theme.text-md;
+            font-weight: 600;
+            overflow: elide;
+        }
+        if root.item.hint != "": Text {
+            text: root.item.hint;
+            color: Theme.text-faint;
+            font-size: Theme.text-sm;
+            overflow: elide;
+        }
+    }
+
+    // Toggle.
+    if root.item.kind == "toggle": Rectangle {
+        x: root.width - 16px - self.width;
+        width: 38px;
+        height: 22px;
+        border-radius: 11px;
+        background: root.item.on ? Theme.accent : Theme.surface-3;
+        animate background { duration: Theme.fast; }
+        Rectangle {
+            x: root.item.on ? parent.width - self.width - 3px : 3px;
+            width: 16px;
+            height: 16px;
+            border-radius: 8px;
+            background: white;
+            animate x { duration: Theme.fast; easing: ease-out-quart; }
+        }
+    }
+    // Choice: ‹ value ›
+    if root.item.kind == "choice": HorizontalLayout {
+        x: root.width - 16px - self.width;
+        y: 0;
+        width: self.preferred-width;
+        height: root.height;
+        spacing: 10px;
+        Text {
+            text: "‹";
+            color: root.focused ? Theme.accent-light : Theme.text-faint;
+            font-size: Theme.text-lg;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+        Text {
+            text: root.item.value;
+            color: Theme.text;
+            font-size: Theme.text-md;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        Text {
+            text: "›";
+            color: root.focused ? Theme.accent-light : Theme.text-faint;
+            font-size: Theme.text-lg;
+            font-weight: 700;
+            vertical-alignment: center;
+        }
+    }
+    if root.item.kind == "info" || root.item.kind == "action": Text {
+        x: root.width - 16px - self.preferred-width;
+        text: root.item.kind == "action" && root.item.value == "" ? "›" : root.item.value;
+        color: root.item.kind == "action" ? Theme.accent-light : Theme.text-muted;
+        font-size: Theme.text-md;
+        font-weight: 600;
+        vertical-alignment: center;
+    }
+}
+
+export component SettingsScreen inherits Rectangle {
+    in property <[NavItem]> sections;
+    in property <int> section-index;
+    in property <[SettingItem]> items;
+    in property <int> item-index;
+    in property <bool> active;
+    in property <int> zone;                 // 0 sections, 1 items
+    in property <string> section-title;
+    in property <string> section-blurb;
+    in property <float> busy-progress;      // < 0 hidden (e.g. update download)
+    in property <length> left-pad: Theme.rail-collapsed + 28px;
+    background: Theme.bg;
+
+    Text {
+        x: root.left-pad;
+        y: Theme.safe-y;
+        text: "Settings";
+        color: Theme.text;
+        font-size: Theme.text-2xl;
+        font-weight: 900;
+    }
+
+    // Section list.
+    for section[i] in root.sections: Rectangle {
+        x: root.left-pad - 10px;
+        y: Theme.safe-y + 52px + i * 40px;
+        width: 190px;
+        height: 36px;
+        border-radius: Theme.radius;
+        background: root.active && root.zone == 0 && i == root.section-index
+            ? Theme.accent
+            : (i == root.section-index ? Theme.surface-2 : transparent);
+        animate background { duration: Theme.fast; }
+        Image {
+            x: 12px;
+            width: 15px;
+            height: 15px;
+            source: section.icon;
+            colorize: i == root.section-index ? Theme.text : Theme.text-faint;
+        }
+        Text {
+            x: 38px;
+            text: section.label;
+            color: i == root.section-index ? Theme.text : Theme.text-muted;
+            font-size: Theme.text-md;
+            font-weight: i == root.section-index ? 700 : 500;
+        }
+    }
+
+    // Items.
+    property <length> panel-x: root.left-pad + 210px;
+    property <length> panel-w: min(560px, root.width - self.panel-x - Theme.safe-x);
+    Text {
+        x: root.panel-x;
+        y: Theme.safe-y + 52px;
+        text: root.section-title;
+        color: Theme.text;
+        font-size: Theme.text-xl;
+        font-weight: 800;
+    }
+    Text {
+        x: root.panel-x;
+        y: Theme.safe-y + 78px;
+        width: root.panel-w;
+        text: root.section-blurb;
+        color: Theme.text-muted;
+        font-size: Theme.text-sm;
+        wrap: word-wrap;
+    }
+    property <length> list-top: Theme.safe-y + (root.section-blurb != "" ? 116px : 92px);
+    Rectangle {
+        x: root.panel-x - 4px;
+        y: root.list-top;
+        width: root.panel-w + 8px;
+        height: root.height - self.y - 8px;
+        clip: true;
+        VerticalLayout {
+            x: 4px;
+            y: 4px - max(0px, (root.item-index - 4) * 50px);
+            width: root.panel-w;
+            spacing: 8px;
+            alignment: start;
+            animate y { duration: Theme.med; easing: ease-out-quart; }
+            for item[i] in root.items: SettingRow {
+                item: item;
+                focused: root.active && root.zone == 1 && i == root.item-index;
+            }
+            if root.busy-progress >= 0: ProgressBar {
+                value: root.busy-progress;
+                height: 6px;
+            }
+        }
+    }
+}

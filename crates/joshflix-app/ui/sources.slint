@@ -1,0 +1,287 @@
+import { Theme, Icons } from "theme.slint";
+import { SourceItem } from "types.slint";
+import { Badge, Spinner, ProgressBar, PillButton } from "components.slint";
+
+component SourceRow inherits Rectangle {
+    in property <SourceItem> source;
+    in property <bool> focused;
+    height: 70px;
+    border-radius: Theme.radius;
+    background: focused ? Theme.surface-3 : transparent;
+    border-width: focused ? 2px : 0px;
+    border-color: Theme.accent;
+    animate background { duration: Theme.fast; }
+
+    // Quality block.
+    Rectangle {
+        x: 10px;
+        width: 64px;
+        height: 50px;
+        border-radius: Theme.radius-sm;
+        background: root.source.cached ? Theme.accent-soft : Theme.surface-2;
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.source.quality;
+                color: Theme.text;
+                font-size: Theme.text-lg;
+                font-weight: 900;
+                horizontal-alignment: center;
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 3px;
+                Image {
+                    source: root.source.cached ? Icons.bolt : Icons.download;
+                    width: 10px;
+                    height: 10px;
+                    colorize: root.source.cached ? Theme.accent-light : Theme.text-faint;
+                }
+                Text {
+                    text: root.source.cached ? "Instant" : "Download";
+                    color: root.source.cached ? Theme.accent-light : Theme.text-faint;
+                    font-size: Theme.text-xs;
+                    font-weight: 700;
+                }
+            }
+        }
+    }
+
+    VerticalLayout {
+        x: 86px;
+        width: root.width - 98px;
+        alignment: center;
+        spacing: 5px;
+        Text {
+            text: root.source.title;
+            color: Theme.text;
+            font-size: Theme.text-md;
+            font-weight: 600;
+            overflow: elide;
+        }
+        HorizontalLayout {
+            spacing: 4px;
+            alignment: start;
+            height: 17px;
+            for badge in root.source.badges: Badge {
+                label: badge;
+            }
+            if root.source.hidden-reason != "": Badge {
+                label: root.source.hidden-reason;
+                tint: #f871712e;
+                text-color: Theme.danger;
+            }
+        }
+        Text {
+            text: root.source.info;
+            color: Theme.text-faint;
+            font-size: Theme.text-sm;
+            overflow: elide;
+        }
+    }
+}
+
+// Stremio-style source picker sliding in from the right.
+export component SourcesSheet inherits Rectangle {
+    in property <bool> open;
+    in property <string> heading;
+    in property <string> subheading;
+    in property <bool> loading;
+    in property <string> message;          // notice / error / empty text
+    in property <string> message-action;   // e.g. "Open Settings" ("" = none)
+    in property <[SourceItem]> sources;
+    in property <int> focused-index;       // == sources.length focuses the footer button
+    in property <string> footer;           // "Show 12 hidden sources" ("" = none)
+
+    property <length> panel-w: min(600px, root.width * 0.64);
+    property <length> row-h: 74px;
+
+    // Scrim.
+    Rectangle {
+        background: #05060acc;
+        opacity: root.open ? 1 : 0;
+        animate opacity { duration: Theme.med; }
+    }
+
+    panel := Rectangle {
+        x: root.open ? root.width - root.panel-w : root.width + 20px;
+        width: root.panel-w;
+        background: Theme.bg-raised;
+        border-width: 1px;
+        border-color: Theme.border;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #000000cc;
+        animate x { duration: Theme.med; easing: ease-out-quart; }
+
+        Text {
+            x: 24px;
+            y: Theme.safe-y;
+            text: root.heading;
+            color: Theme.text;
+            font-size: Theme.text-xl;
+            font-weight: 800;
+        }
+        Text {
+            x: 24px;
+            y: Theme.safe-y + 26px;
+            width: parent.width - 48px;
+            text: root.subheading;
+            color: Theme.text-muted;
+            font-size: Theme.text-sm;
+            overflow: elide;
+        }
+
+        if root.loading: VerticalLayout {
+            y: 160px;
+            height: 80px;
+            alignment: center;
+            spacing: 12px;
+            HorizontalLayout {
+                alignment: center;
+                Spinner { }
+            }
+            Text {
+                text: "Finding sources on Comet…";
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                horizontal-alignment: center;
+            }
+        }
+
+        if !root.loading && root.message != "": VerticalLayout {
+            x: 24px;
+            y: 110px;
+            width: parent.width - 48px;
+            spacing: 14px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 10px;
+                Image {
+                    source: Icons.alert;
+                    width: 18px;
+                    height: 18px;
+                    colorize: Theme.warning;
+                }
+                Text {
+                    text: root.message;
+                    color: Theme.text;
+                    font-size: Theme.text-md;
+                    wrap: word-wrap;
+                }
+            }
+            if root.message-action != "": HorizontalLayout {
+                alignment: start;
+                PillButton {
+                    label: root.message-action;
+                    icon: Icons.settings;
+                    focused: root.sources.length == 0;
+                }
+            }
+        }
+
+        // The list.
+        property <length> list-top: Theme.safe-y + 58px;
+        property <length> list-h: self.height - self.list-top - 12px;
+        property <int> count: root.sources.length + (root.footer != "" ? 1 : 0);
+        property <length> scroll: max(0px, min(root.focused-index * root.row-h - self.list-h / 2 + root.row-h / 2, self.count * root.row-h - self.list-h));
+        Rectangle {
+            x: 12px;
+            y: parent.list-top + (root.message != "" ? 110px : 0px);
+            width: parent.width - 24px;
+            height: parent.list-h - (root.message != "" ? 110px : 0px);
+            clip: true;
+            Rectangle {
+                y: -panel.scroll;
+                height: panel.count * root.row-h;
+                animate y { duration: Theme.fast; easing: ease-out-quart; }
+                for source[i] in root.sources: SourceRow {
+                    y: i * root.row-h;
+                    width: parent.width;
+                    source: source;
+                    focused: i == root.focused-index;
+                }
+                if root.footer != "": Rectangle {
+                    y: root.sources.length * root.row-h + 8px;
+                    height: 40px;
+                    HorizontalLayout {
+                        alignment: center;
+                        PillButton {
+                            label: root.footer;
+                            icon: Icons.filter;
+                            compact: true;
+                            focused: root.focused-index == root.sources.length;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// "Getting your stream" overlay while Comet/Real-Debrid resolve the pick.
+export component ResolveOverlay inherits Rectangle {
+    in property <bool> open;
+    in property <string> title;
+    in property <string> status;
+    in property <float> progress;       // < 0 hides the bar
+    in property <string> hint;          // shown after ~10 s of downloading
+    in property <string> error;
+    background: #05060af2;
+    opacity: open ? 1 : 0;
+    animate opacity { duration: Theme.med; }
+
+    VerticalLayout {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.preferred-height) / 2;
+        width: min(460px, root.width - 80px);
+        spacing: 14px;
+        alignment: center;
+
+        if root.error == "": HorizontalLayout {
+            alignment: center;
+            Spinner { size: 34px; }
+        }
+        if root.error != "": HorizontalLayout {
+            alignment: center;
+            Image {
+                source: Icons.alert;
+                width: 30px;
+                height: 30px;
+                colorize: Theme.danger;
+            }
+        }
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.text-xl;
+            font-weight: 800;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.error != "" ? root.error : root.status;
+            color: root.error != "" ? Theme.danger : Theme.text-muted;
+            font-size: Theme.text-md;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.progress >= 0 && root.error == "": ProgressBar {
+            value: root.progress;
+            height: 6px;
+        }
+        if root.hint != "" && root.error == "": Text {
+            text: root.hint;
+            color: Theme.text-faint;
+            font-size: Theme.text-sm;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        Text {
+            text: root.error != "" ? "Press Back to pick another source" : "Press Back to cancel";
+            color: Theme.text-faint;
+            font-size: Theme.text-xs;
+            horizontal-alignment: center;
+        }
+    }
+}

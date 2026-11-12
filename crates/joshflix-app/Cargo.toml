@@ -1,5 +1,6 @@
 [package]
 name = "joshflix-app"
+description = "Joshflix: a native Rust TV app (Slint + libmpv) for Comet and Real-Debrid"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,3 +15,25 @@ name = "joshflix"
 path = "src/main.rs"
 
 [dependencies]
+joshflix-core.workspace = true
+joshflix-player.workspace = true
+joshflix-protocol.workspace = true
+slint = { workspace = true, features = ["std", "compat-1-2", "renderer-femtovg"] }
+tokio.workspace = true
+tracing.workspace = true
+qrcode.workspace = true
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+slint = { workspace = true, features = ["backend-winit"] }
+tracing-subscriber.workspace = true
+
+[target.'cfg(target_os = "android")'.dependencies]
+slint = { workspace = true, features = ["backend-android-activity-06"] }
+tracing = { workspace = true, features = ["log"] }
+log = "0.4"
+android_logger = "0.15.1"
+jni = "0.21"
+libloading.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

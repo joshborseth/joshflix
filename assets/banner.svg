@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 180" width="320" height="180">
+  <!-- Android TV banner. The wordmark is drawn as monoline strokes, so it needs no font. -->
+  <defs>
+    <linearGradient id="jf-blue" gradientUnits="userSpaceOnUse" x1="0" y1="-4" x2="0" y2="46">
+      <stop offset="0" stop-color="#7DB3FF"/>
+      <stop offset="1" stop-color="#3D8BFF"/>
+    </linearGradient>
+    <radialGradient id="jf-glow" cx="0.5" cy="0.62" r="0.6" gradientTransform="translate(0.5 0.62) scale(1 0.56) translate(-0.5 -0.62)">
+      <stop offset="0" stop-color="#3D8BFF" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#3D8BFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="320" height="180" fill="#0B0D12"/>
+  <rect width="320" height="180" fill="url(#jf-glow)"/>
+  <g transform="translate(46.15 66.9) scale(1.1)" fill="none" stroke-width="8" stroke-linecap="round" stroke-linejoin="round">
+    <g stroke="#F2F5FA">
+      <path d="M18 0 V31 A9 9 0 0 1 0 31"/>                                   <!-- J -->
+      <circle cx="43" cy="29" r="11"/>                                         <!-- o -->
+      <path d="M85 21.5 C83 17.5 71 16.5 70 23.5 C69 30 85 27.5 84 34.5 C83 41.5 71 41.5 69 37.5"/> <!-- s -->
+      <path d="M100 0 V40 M100 29 A9 11 0 0 1 118 29 V40"/>                  <!-- h -->
+    </g>
+    <g stroke="url(#jf-blue)">
+      <path d="M132 18 H148 M151 3 C147 -1.5 139 -2 139 8 V40"/>               <!-- f -->
+      <path d="M161 0 V40"/>                                                   <!-- l -->
+      <path d="M175 18 V40"/>                                                  <!-- i -->
+      <path d="M189 18 L207 40 M207 18 L189 40"/>                              <!-- x -->
+    </g>
+    <path d="M171.5 -3.5 L171.5 6.5 L180 1.5 Z" fill="#7DB3FF" stroke="#7DB3FF" stroke-width="2"/> <!-- i dot: play mark -->
+  </g>
+</svg>

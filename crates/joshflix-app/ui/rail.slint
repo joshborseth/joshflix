@@ -1,0 +1,93 @@
+import { Theme, Icons } from "theme.slint";
+import { NavItem } from "types.slint";
+
+// Left navigation rail. Collapsed to icons; widens with labels while it has focus.
+export component Rail inherits Rectangle {
+    in property <[NavItem]> items;
+    in property <int> selected;        // current section
+    in property <int> focused-index;   // highlighted while expanded
+    in property <bool> expanded;
+    width: expanded ? Theme.rail-expanded : Theme.rail-collapsed;
+    animate width { duration: Theme.med; easing: ease-out-quart; }
+
+    // Fade behind the expanded rail so labels stay readable over artwork.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: Theme.rail-expanded + 160px;
+        background: @linear-gradient(90deg, #0b0d12f2 0%, #0b0d12d9 55%, #0b0d1200 100%);
+        opacity: root.expanded ? 1 : 0;
+        animate opacity { duration: Theme.med; }
+    }
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: Theme.rail-collapsed;
+        background: @linear-gradient(90deg, #0b0d12cc 0%, #0b0d1200 100%);
+    }
+
+    // Brand mark.
+    Rectangle {
+        x: 14px;
+        y: Theme.safe-y;
+        width: 24px;
+        height: 24px;
+        border-radius: 7px;
+        background: @linear-gradient(135deg, Theme.accent-light 0%, Theme.accent 55%, Theme.accent-deep 100%);
+        Text {
+            text: "J";
+            color: white;
+            font-size: 15px;
+            font-weight: 900;
+        }
+    }
+    Text {
+        x: 48px;
+        y: Theme.safe-y + 2px;
+        text: "Joshflix";
+        color: Theme.text;
+        font-size: Theme.text-xl;
+        font-weight: 900;
+        opacity: root.expanded ? 1 : 0;
+        animate opacity { duration: Theme.med; }
+    }
+
+    property <length> item-h: 38px;
+    property <length> top: (root.height - root.items.length * item-h) / 2;
+
+    for item[i] in root.items: Rectangle {
+        x: 8px;
+        y: root.top + i * root.item-h;
+        width: root.width - 16px;
+        height: root.item-h - 4px;
+        border-radius: Theme.radius;
+        background: root.expanded && i == root.focused-index ? Theme.accent : transparent;
+        animate background { duration: Theme.fast; }
+
+        // Selected-section marker when collapsed.
+        Rectangle {
+            x: -8px;
+            width: 3px;
+            height: 16px;
+            border-radius: 2px;
+            background: Theme.accent;
+            opacity: !root.expanded && i == root.selected ? 1 : 0;
+        }
+        Image {
+            x: 10px;
+            width: 17px;
+            height: 17px;
+            source: item.icon;
+            colorize: (root.expanded && i == root.focused-index) || i == root.selected ? Theme.text : Theme.text-faint;
+        }
+        Text {
+            x: 40px;
+            text: item.label;
+            color: Theme.text;
+            font-size: Theme.text-md;
+            font-weight: i == root.selected ? 700 : 500;
+            opacity: root.expanded ? 1 : 0;
+            animate opacity { duration: Theme.med; }
+        }
+    }
+}

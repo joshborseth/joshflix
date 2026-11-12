@@ -1,0 +1,89 @@
+// Data passed between Rust and the UI. Rust owns all state and focus;
+// the UI only renders it.
+
+export enum Screen { onboarding, browse, search, discover, mylist, settings, detail, player }
+
+// A poster (or wide card) in a row or grid.
+export struct Poster {
+    id: string,
+    kind: string,            // "movie" | "series"
+    title: string,
+    subtitle: string,        // year, or "S2 E4 · Title" for wide cards
+    image: image,
+    has-image: bool,
+    progress: float,         // 0..1, drawn as a bar when > 0
+    badge: string,           // e.g. "Up next"
+}
+
+export struct Row {
+    title: string,
+    items: [Poster],
+    focused-col: int,
+    wide: bool,              // landscape cards (Continue Watching)
+    loading: bool,
+    empty-text: string,
+    hidden: bool,            // collapsed (empty local rows)
+}
+
+export struct Hero {
+    title: string,
+    logo: image,
+    has-logo: bool,
+    meta: string,            // "2024 · 2h 46m · Sci-Fi"
+    rating: string,          // "8.5" or ""
+    description: string,
+}
+
+export struct EpisodeCard {
+    label: string,           // "E4"
+    title: string,
+    overview: string,
+    thumb: image,
+    has-thumb: bool,
+    progress: float,
+    watched: bool,
+    aired: string,           // "Jan 21, 2008" or "Coming May 3"
+    upcoming: bool,
+}
+
+export struct DetailButton {
+    label: string,
+    icon: image,
+    primary: bool,
+}
+
+export struct SourceItem {
+    quality: string,         // "4K", "1080p"
+    title: string,           // release name
+    badges: [string],
+    info: string,            // "64.3 GB · 42 seeders · StremThru"
+    cached: bool,
+    hidden-reason: string,   // non-empty when shown via "Show all"
+}
+
+export struct TrackItem {
+    label: string,
+    selected: bool,
+}
+
+export struct SettingItem {
+    kind: string,            // "toggle" | "choice" | "action" | "info" | "danger"
+    label: string,
+    value: string,
+    on: bool,
+    hint: string,
+}
+
+export struct NavItem {
+    label: string,
+    icon: image,
+}
+
+export struct KeyCap {
+    label: string,
+    icon: image,
+    has-icon: bool,
+    col: int,
+    row: int,
+    span: int,               // grid columns this key occupies
+}

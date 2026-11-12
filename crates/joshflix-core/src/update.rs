@@ -89,7 +89,8 @@ impl Updater {
         let mut received: u64 = 0;
         let mut body = response.bytes_stream();
         while let Some(chunk) = body.next().await {
-            if *cancel.borrow() {
+            let cancelled = *cancel.borrow();
+            if cancelled {
                 drop(file);
                 let _ = tokio::fs::remove_file(&partial).await;
                 return Err(CoreError::Cancelled);

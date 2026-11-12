@@ -1,0 +1,150 @@
+import { Theme, Icons } from "theme.slint";
+import { Hero, Row } from "types.slint";
+import { PosterRow } from "components.slint";
+
+// Crossfading full-bleed backdrop with legibility gradients. Shared by Browse and Detail.
+export component Backdrop inherits Rectangle {
+    in property <image> image-a;
+    in property <image> image-b;
+    in property <bool> show-b;
+    in property <float> strength: 1.0;   // 1 = hero, lower = dimmer
+    clip: true;
+
+    Image {
+        x: parent.width * 0.22;
+        width: parent.width * 0.78;
+        height: parent.height;
+        source: root.image-a;
+        image-fit: cover;
+        opacity: root.show-b ? 0 : root.strength;
+        animate opacity { duration: Theme.slow; easing: ease-in-out; }
+    }
+    Image {
+        x: parent.width * 0.22;
+        width: parent.width * 0.78;
+        height: parent.height;
+        source: root.image-b;
+        image-fit: cover;
+        opacity: root.show-b ? root.strength : 0;
+        animate opacity { duration: Theme.slow; easing: ease-in-out; }
+    }
+    // Left-to-right fade for the text column.
+    Rectangle {
+        background: @linear-gradient(90deg, Theme.bg 0%, Theme.bg 22%, #0b0d12b3 42%, #0b0d1200 70%);
+    }
+    // Bottom fade into the rows.
+    Rectangle {
+        background: @linear-gradient(180deg, #0b0d1200 35%, #0b0d12b3 70%, Theme.bg 100%);
+    }
+}
+
+// Home / Movies / Shows: hero for the focused title, rows below.
+export component BrowseScreen inherits Rectangle {
+    in property <Hero> hero;
+    in property <image> backdrop-a;
+    in property <image> backdrop-b;
+    in property <bool> show-b;
+    in property <[Row]> rows;
+    in property <int> focused-row;
+    in property <bool> active;           // false while the rail has focus
+    in property <length> scroll-y;       // computed in Rust from row heights
+    in property <length> left-pad: Theme.rail-collapsed + 28px;
+    in property <string> section-title;  // "Movies", "Shows" ("" on Home)
+
+    property <length> hero-h: root.height * 0.56;
+
+    Backdrop {
+        x: 0;
+        y: 0;
+        height: root.hero-h + 60px;
+        image-a: root.backdrop-a;
+        image-b: root.backdrop-b;
+        show-b: root.show-b;
+    }
+
+    // Hero text.
+    VerticalLayout {
+        x: root.left-pad;
+        y: Theme.safe-y + 22px;
+        width: min(400px, root.width * 0.42);
+        spacing: 8px;
+        alignment: start;
+
+        if root.section-title != "": Text {
+            text: root.section-title;
+            color: Theme.accent-light;
+            font-size: Theme.text-sm;
+            font-weight: 700;
+            letter-spacing: 1.5px;
+        }
+        if root.hero.has-logo: Image {
+            source: root.hero.logo;
+            height: 64px;
+            width: min(300px, self.height * self.source.width / max(1, self.source.height));
+            image-fit: contain;
+            horizontal-alignment: left;
+        }
+        if !root.hero.has-logo: Text {
+            text: root.hero.title;
+            color: Theme.text;
+            font-size: Theme.text-3xl;
+            font-weight: 900;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            height: 16px;
+            if root.hero.rating != "": HorizontalLayout {
+                spacing: 4px;
+                Image {
+                    source: Icons.star;
+                    width: 12px;
+                    height: 12px;
+                    y: 2px;
+                    colorize: Theme.warning;
+                }
+                Text {
+                    text: root.hero.rating;
+                    color: Theme.text;
+                    font-size: Theme.text-md;
+                    font-weight: 700;
+                }
+            }
+            Text {
+                text: root.hero.meta;
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                font-weight: 500;
+            }
+        }
+        Text {
+            text: root.hero.description;
+            color: Theme.text-muted;
+            font-size: Theme.text-md;
+            wrap: word-wrap;
+            overflow: elide;
+            height: 44px;
+        }
+    }
+
+    // Rows, scrolled so the focused row sits just under the hero.
+    Rectangle {
+        y: root.hero-h - 22px;
+        height: root.height - self.y;
+        clip: true;
+        VerticalLayout {
+            y: -root.scroll-y;
+            height: self.preferred-height;
+            alignment: start;
+            animate y { duration: Theme.med; easing: ease-out-quart; }
+            for row[i] in root.rows: PosterRow {
+                data: row;
+                active: root.active && i == root.focused-row;
+                left-pad: root.left-pad;
+                opacity: i < root.focused-row ? 0 : 1;
+                animate opacity { duration: Theme.fast; }
+            }
+        }
+    }
+}

@@ -1,0 +1,252 @@
+import { Theme, Icons } from "theme.slint";
+import { EpisodeCard, DetailButton } from "types.slint";
+import { PillButton, Chip, Spinner, ProgressBar } from "components.slint";
+import { Backdrop } from "browse.slint";
+
+component EpisodeTile inherits Rectangle {
+    in property <EpisodeCard> episode;
+    in property <bool> focused;
+    width: 172px;
+    height: 97px + 44px;
+
+    thumb := Rectangle {
+        x: 0;
+        y: 0;
+        width: parent.width;
+        height: 97px;
+        border-radius: Theme.radius;
+        background: Theme.surface-2;
+        clip: true;
+        transform-scale: root.focused ? Theme.focus-scale : 1.0;
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        drop-shadow-blur: root.focused ? 16px : 0px;
+        drop-shadow-color: Theme.glow;
+        animate transform-scale, drop-shadow-blur { duration: Theme.fast; easing: ease-out-quart; }
+
+        if !root.episode.has-thumb: Text {
+            text: root.episode.label;
+            color: Theme.text-faint;
+            font-size: Theme.text-2xl;
+            font-weight: 900;
+        }
+        Image {
+            width: parent.width;
+            height: parent.height;
+            source: root.episode.thumb;
+            image-fit: cover;
+            opacity: root.episode.has-thumb ? (root.episode.upcoming ? 0.35 : 1) : 0;
+            animate opacity { duration: Theme.med; }
+        }
+        if root.episode.watched: Rectangle {
+            x: parent.width - 24px;
+            y: 6px;
+            width: 18px;
+            height: 18px;
+            border-radius: 9px;
+            background: Theme.accent;
+            Image {
+                width: 11px;
+                height: 11px;
+                source: Icons.check;
+                colorize: white;
+            }
+        }
+        if root.episode.progress > 0 && !root.episode.watched: Rectangle {
+            y: parent.height - 4px;
+            height: 4px;
+            background: #00000099;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.episode.progress;
+                background: Theme.accent;
+            }
+        }
+        Rectangle {
+            border-radius: Theme.radius;
+            border-width: root.focused ? 2px : 0px;
+            border-color: Theme.accent-light;
+        }
+    }
+    Text {
+        y: 97px + 8px;
+        width: parent.width;
+        text: root.episode.label + " · " + root.episode.title;
+        color: root.focused ? Theme.text : Theme.text-muted;
+        font-size: Theme.text-sm;
+        font-weight: 600;
+        overflow: elide;
+    }
+    Text {
+        y: 97px + 24px;
+        width: parent.width;
+        text: root.episode.aired;
+        color: root.episode.upcoming ? Theme.accent-light : Theme.text-faint;
+        font-size: Theme.text-xs;
+        overflow: elide;
+    }
+}
+
+export component DetailScreen inherits Rectangle {
+    in property <bool> loading;
+    in property <string> title;
+    in property <image> logo;
+    in property <bool> has-logo;
+    in property <image> backdrop;
+    in property <string> meta;
+    in property <string> rating;
+    in property <string> description;
+    in property <string> credits;
+    in property <string> status-line;          // e.g. "Up next: S3 E5" or error
+    in property <[DetailButton]> buttons;
+    in property <bool> is-series;
+    in property <[string]> seasons;
+    in property <int> selected-season;
+    in property <[EpisodeCard]> episodes;
+    in property <string> episode-preview;     // overview of the focused episode
+    // Focus
+    in property <int> zone;                   // 0 buttons, 1 seasons, 2 episodes
+    in property <int> button-index;
+    in property <int> season-index;
+    in property <int> episode-index;
+
+    background: Theme.bg;
+
+    Backdrop {
+        image-a: root.backdrop;
+        image-b: root.backdrop;
+        show-b: false;
+        strength: root.zone == 2 ? 0.55 : 1.0;
+    }
+
+    if root.loading: Spinner {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+    }
+
+    property <bool> compact: root.is-series && root.zone > 0;
+
+    // Info column.
+    VerticalLayout {
+        x: Theme.safe-x;
+        y: Theme.safe-y + (root.compact ? 0px : 20px);
+        width: min(440px, root.width * 0.48);
+        spacing: 9px;
+        alignment: start;
+        animate y { duration: Theme.med; easing: ease-out-quart; }
+
+        if root.has-logo: Image {
+            source: root.logo;
+            height: root.compact ? 48px : 70px;
+            width: min(320px, self.height * self.source.width / max(1, self.source.height));
+            image-fit: contain;
+            horizontal-alignment: left;
+            animate height { duration: Theme.med; }
+        }
+        if !root.has-logo: Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: root.compact ? Theme.text-2xl : Theme.text-3xl;
+            font-weight: 900;
+            wrap: word-wrap;
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            height: 16px;
+            if root.rating != "": HorizontalLayout {
+                spacing: 4px;
+                Image {
+                    source: Icons.star;
+                    width: 12px;
+                    height: 12px;
+                    y: 2px;
+                    colorize: Theme.warning;
+                }
+                Text {
+                    text: root.rating;
+                    color: Theme.text;
+                    font-size: Theme.text-md;
+                    font-weight: 700;
+                }
+            }
+            Text {
+                text: root.meta;
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                font-weight: 500;
+            }
+        }
+        Text {
+            text: root.zone == 2 && root.episode-preview != "" ? root.episode-preview : root.description;
+            color: Theme.text-muted;
+            font-size: Theme.text-md;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: root.compact ? 48px : 66px;
+        }
+        if !root.compact && root.credits != "": Text {
+            text: root.credits;
+            color: Theme.text-faint;
+            font-size: Theme.text-sm;
+            wrap: word-wrap;
+            overflow: elide;
+            max-height: 30px;
+        }
+        if root.status-line != "": Text {
+            text: root.status-line;
+            color: Theme.accent-light;
+            font-size: Theme.text-sm;
+            font-weight: 600;
+        }
+        Rectangle { height: 4px; }
+        HorizontalLayout {
+            spacing: 10px;
+            alignment: start;
+            for button[i] in root.buttons: PillButton {
+                label: button.label;
+                icon: button.icon;
+                primary: button.primary;
+                focused: root.zone == 0 && i == root.button-index;
+            }
+        }
+    }
+
+    // Seasons and episodes.
+    if root.is-series: Rectangle {
+        y: root.height - 232px;
+        height: 232px;
+
+        Rectangle {
+            x: Theme.safe-x - 4px;
+            y: 0;
+            height: 30px;
+            HorizontalLayout {
+                x: 0;
+                spacing: 8px;
+                alignment: start;
+                for season[i] in root.seasons: Chip {
+                    label: season;
+                    focused: root.zone == 1 && i == root.season-index;
+                    selected: i == root.selected-season;
+                }
+            }
+        }
+
+        Rectangle {
+            y: 44px;
+            height: 188px;
+            clip: false;
+            Rectangle {
+                x: Theme.safe-x - root.episode-index * (172px + Theme.card-gap);
+                y: 6px;
+                width: root.episodes.length * (172px + Theme.card-gap);
+                animate x { duration: Theme.med; easing: ease-out-quart; }
+                for episode[i] in root.episodes: EpisodeTile {
+                    x: i * (172px + Theme.card-gap);
+                    episode: episode;
+                    focused: root.zone == 2 && i == root.episode-index;
+                }
+            }
+        }
+    }
+}

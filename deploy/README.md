@@ -1,0 +1,59 @@
+# Joshflix relay
+
+`joshflix-relay` is a small private server on the dev box. It does two jobs for the TV app:
+
+- **Real-Debrid pairing.** The TV shows a QR code. The phone opens the relay's page, pastes its Real-Debrid API key, and the relay checks the key and hands it to the TV once. The key stays in memory only and is forgotten after delivery.
+- **App updates.** It serves `updates/manifest.json` and the APKs that `cargo xtask publish` writes into the data directory.
+
+It answers only on the home LAN (`192.168.1.67`) and the tailnet (`100.107.121.43`). Requests from any other address get 403. Do not port-forward it, open firewall ports for it, or put it behind Tailscale Funnel or serve.
+
+## Endpoints
+
+The wire contract lives in `crates/joshflix-protocol/src/lib.rs`. Quick checks:
+
+```sh
+curl http://192.168.1.67:8788/healthz                    # ok
+curl -X POST http://192.168.1.67:8788/api/v1/pairings    # create a pairing
+curl http://192.168.1.67:8788/api/v1/updates/latest      # current manifest, 404 if none
+```
+
+## Environment
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `JOSHFLIX_RELAY_BIND` | `0.0.0.0:8788` | Listen address. IPv4 only, because the dev box's IPv6 address is public. Port 8787 is taken by another service. |
+| `JOSHFLIX_RELAY_DATA` | `~/.local/share/joshflix-relay` | Data directory. Updates go in `updates/`. |
+| `JOSHFLIX_RELAY_PUBLIC_URL` | unset | Base URL put in the QR code, such as `http://192.168.1.67:8788`. When unset, the relay uses the `Host` header of the TV's request. |
+| `JOSHFLIX_RD_API_BASE` | `https://api.real-debrid.com/rest/1.0` | Real-Debrid API base. Override only for testing. |
+| `RUST_LOG` | `info` | Log filter. |
+
+## Install or update
+
+Run from the repository root as `slammer`:
+
+```sh
+CARGO_BUILD_JOBS=6 cargo build --release -p joshflix-relay
+install -m 0755 target/release/joshflix-relay ~/.local/bin/joshflix-relay
+install -m 0644 deploy/joshflix-relay.service ~/.config/systemd/user/joshflix-relay.service
+systemctl --user daemon-reload
+systemctl --user enable --now joshflix-relay    # first install
+systemctl --user restart joshflix-relay         # after an update
+```
+
+Lingering must be on so the service keeps running after logout:
+
+```sh
+loginctl show-user slammer -p Linger            # expect Linger=yes
+sudo loginctl enable-linger slammer             # if it is off
+```
+
+Restarting drops any pairing in progress. The TV then shows an expired code and makes a new one.
+
+## Logs
+
+```sh
+systemctl --user status joshflix-relay
+journalctl --user -u joshflix-relay -f
+```
+
+Logs never include API keys, TV secrets, or full pairing codes. A code appears only as its first four characters.

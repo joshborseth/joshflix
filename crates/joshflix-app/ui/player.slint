@@ -1,0 +1,324 @@
+import { Theme, Icons } from "theme.slint";
+import { TrackItem, DetailButton } from "types.slint";
+import { Spinner, OptionList, PillButton } from "components.slint";
+
+component ControlButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> focused;
+    in property <bool> active;
+    width: 40px;
+    height: 40px;
+    border-radius: 20px;
+    background: focused ? Theme.accent : (active ? Theme.accent-soft : #ffffff14);
+    drop-shadow-blur: focused ? 14px : 0px;
+    drop-shadow-color: Theme.glow;
+    transform-scale: focused ? 1.1 : 1.0;
+    transform-origin: { x: self.width / 2, y: self.height / 2 };
+    animate background, transform-scale { duration: Theme.fast; }
+    Image {
+        width: 18px;
+        height: 18px;
+        source: root.icon;
+        colorize: root.active && !root.focused ? Theme.accent-light : Theme.text;
+    }
+    if root.focused: Text {
+        y: root.height + 6px;
+        x: (root.width - self.preferred-width) / 2;
+        text: root.label;
+        color: Theme.text;
+        font-size: Theme.text-xs;
+        font-weight: 600;
+    }
+}
+
+export component PlayerOverlay inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <bool> overlay-visible;
+    in property <bool> paused;
+    in property <bool> buffering;
+    in property <string> buffering-text;
+    in property <float> progress;
+    in property <string> position-text;
+    in property <string> duration-text;
+    in property <string> remaining-text;
+    // Seeking preview
+    in property <bool> seeking;
+    in property <float> seek-progress;
+    in property <string> seek-text;
+    // Focus: 0 = seek bar, 1 = controls
+    in property <int> zone;
+    in property <int> control-index;
+    in property <bool> night-mode;
+    in property <bool> has-next;
+    in property <bool> subtitles-on;
+    // Track menu
+    in property <bool> menu-open;
+    in property <string> menu-title;
+    in property <[TrackItem]> menu-options;
+    in property <int> menu-index;
+    // Next episode
+    in property <bool> next-visible;
+    in property <string> next-header;
+    in property <string> next-title;
+    in property <int> next-countdown;     // < 0: no countdown
+    in property <bool> next-focused;
+    // Error banner
+    in property <string> error;
+
+    background: transparent;
+
+    // Gradients for legibility.
+    Rectangle {
+        y: 0;
+        height: 120px;
+        background: @linear-gradient(180deg, #000000b3 0%, #00000000 100%);
+        opacity: root.overlay-visible ? 1 : 0;
+        animate opacity { duration: Theme.med; }
+    }
+    Rectangle {
+        y: root.height - 190px;
+        height: 190px;
+        background: @linear-gradient(180deg, #00000000 0%, #000000d9 100%);
+        opacity: root.overlay-visible ? 1 : 0;
+        animate opacity { duration: Theme.med; }
+    }
+
+    // Title.
+    VerticalLayout {
+        x: Theme.safe-x;
+        y: Theme.safe-y;
+        width: root.width - 2 * Theme.safe-x;
+        spacing: 4px;
+        alignment: start;
+        opacity: root.overlay-visible ? 1 : 0;
+        animate opacity { duration: Theme.med; }
+        Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.text-xl;
+            font-weight: 800;
+            overflow: elide;
+        }
+        if root.subtitle != "": Text {
+            text: root.subtitle;
+            color: Theme.text-muted;
+            font-size: Theme.text-md;
+            overflow: elide;
+        }
+    }
+
+    // Buffering.
+    if root.buffering: VerticalLayout {
+        x: (root.width - 160px) / 2;
+        y: (root.height - 80px) / 2;
+        width: 160px;
+        spacing: 10px;
+        alignment: center;
+        HorizontalLayout {
+            alignment: center;
+            Spinner { size: 40px; }
+        }
+        Text {
+            text: root.buffering-text;
+            color: Theme.text;
+            font-size: Theme.text-md;
+            horizontal-alignment: center;
+        }
+    }
+
+    // Centered pause glyph when paused and idle.
+    if root.paused && !root.buffering && !root.menu-open: Rectangle {
+        x: (root.width - 64px) / 2;
+        y: (root.height - 64px) / 2;
+        width: 64px;
+        height: 64px;
+        border-radius: 32px;
+        background: #00000080;
+        opacity: root.overlay-visible ? 1 : 0.6;
+        Image {
+            width: 26px;
+            height: 26px;
+            source: Icons.pause;
+            colorize: white;
+        }
+    }
+
+    // Seek bar + controls.
+    Rectangle {
+        x: Theme.safe-x;
+        y: root.height - 128px;
+        width: root.width - 2 * Theme.safe-x;
+        height: 110px;
+        opacity: root.overlay-visible ? 1 : 0;
+        animate opacity { duration: Theme.med; }
+
+        // Times.
+        Text {
+            x: 0;
+            y: 0;
+            text: root.seeking ? root.seek-text : root.position-text;
+            color: root.seeking ? Theme.accent-light : Theme.text;
+            font-size: Theme.text-md;
+            font-weight: 700;
+        }
+        Text {
+            x: parent.width - self.preferred-width;
+            y: 0;
+            text: root.remaining-text;
+            color: Theme.text-muted;
+            font-size: Theme.text-md;
+            font-weight: 600;
+        }
+
+        // Bar.
+        bar := Rectangle {
+            y: 24px;
+            height: root.zone == 0 ? 8px : 5px;
+            border-radius: self.height / 2;
+            background: #ffffff33;
+            animate height { duration: Theme.fast; }
+            Rectangle {
+                x: 0;
+                width: parent.width * clamp(root.progress, 0, 1);
+                border-radius: parent.border-radius;
+                background: Theme.accent;
+            }
+            if root.seeking: Rectangle {
+                x: 0;
+                width: parent.width * clamp(root.seek-progress, 0, 1);
+                border-radius: parent.border-radius;
+                background: Theme.accent-light;
+                opacity: 0.55;
+            }
+            // Knob.
+            Rectangle {
+                property <float> at: root.seeking ? root.seek-progress : root.progress;
+                x: parent.width * clamp(self.at, 0, 1) - self.width / 2;
+                y: (parent.height - self.height) / 2;
+                width: root.zone == 0 ? 18px : 0px;
+                height: self.width;
+                border-radius: self.width / 2;
+                background: white;
+                drop-shadow-blur: 10px;
+                drop-shadow-color: Theme.glow;
+                animate width { duration: Theme.fast; }
+            }
+        }
+
+        // Controls.
+        HorizontalLayout {
+            y: 48px;
+            height: 40px;
+            spacing: 14px;
+            alignment: start;
+            ControlButton {
+                icon: root.paused ? Icons.play : Icons.pause;
+                label: root.paused ? "Play" : "Pause";
+                focused: root.zone == 1 && root.control-index == 0;
+            }
+            ControlButton {
+                icon: Icons.rewind;
+                label: "Back 10s";
+                focused: root.zone == 1 && root.control-index == 1;
+            }
+            ControlButton {
+                icon: Icons.forward;
+                label: "Forward 30s";
+                focused: root.zone == 1 && root.control-index == 2;
+            }
+            ControlButton {
+                icon: Icons.audio;
+                label: "Audio";
+                focused: root.zone == 1 && root.control-index == 3;
+            }
+            ControlButton {
+                icon: Icons.subtitles;
+                label: "Subtitles";
+                active: root.subtitles-on;
+                focused: root.zone == 1 && root.control-index == 4;
+            }
+            ControlButton {
+                icon: Icons.moon;
+                label: root.night-mode ? "Night mode on" : "Night mode off";
+                active: root.night-mode;
+                focused: root.zone == 1 && root.control-index == 5;
+            }
+            if root.has-next: ControlButton {
+                icon: Icons.next;
+                label: "Next episode";
+                focused: root.zone == 1 && root.control-index == 6;
+            }
+        }
+    }
+
+    // Next episode card.
+    Rectangle {
+        x: root.next-visible ? root.width - self.width - Theme.safe-x : root.width + 20px;
+        y: root.height - self.height - (root.overlay-visible ? 150px : Theme.safe-y + 8px);
+        width: 260px;
+        height: 92px;
+        border-radius: Theme.radius-lg;
+        background: Theme.bg-raised;
+        border-width: root.next-focused ? 2px : 1px;
+        border-color: root.next-focused ? Theme.accent : Theme.border;
+        drop-shadow-blur: 30px;
+        drop-shadow-color: #000000aa;
+        animate x, y { duration: Theme.med; easing: ease-out-quart; }
+        VerticalLayout {
+            padding: 14px;
+            spacing: 4px;
+            Text {
+                text: root.next-header;
+                color: Theme.accent-light;
+                font-size: Theme.text-xs;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+            Text {
+                text: root.next-title;
+                color: Theme.text;
+                font-size: Theme.text-md;
+                font-weight: 700;
+                overflow: elide;
+            }
+            Text {
+                text: root.next-countdown >= 0
+                    ? "Playing in " + root.next-countdown + "s · OK to play now"
+                    : (root.next-focused ? "Press OK to play" : "Press Up to choose");
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+            }
+        }
+    }
+
+    // Track menu.
+    if root.menu-open: OptionList {
+        x: root.width - self.width - Theme.safe-x;
+        y: root.height - self.height - 140px;
+        title: root.menu-title;
+        options: root.menu-options;
+        focused-index: root.menu-index;
+    }
+
+    if root.error != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: Theme.safe-y + 40px;
+        width: min(err.preferred-width + 40px, root.width - 80px);
+        height: err.preferred-height + 24px;
+        border-radius: Theme.radius;
+        background: #2a1215;
+        border-width: 1px;
+        border-color: Theme.danger;
+        err := Text {
+            x: 20px;
+            width: parent.width - 40px;
+            text: root.error;
+            color: Theme.text;
+            font-size: Theme.text-md;
+            wrap: word-wrap;
+            horizontal-alignment: center;
+        }
+    }
+}

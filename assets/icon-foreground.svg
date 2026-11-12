@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-14 -14 92 92" width="108" height="108">
+  <!-- Adaptive-icon foreground (108 dp canvas): the icon mark on transparent, inside the 66 dp safe zone. -->
+  <defs>
+    <linearGradient id="jf-blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7DB3FF"/>
+      <stop offset="1" stop-color="#3D8BFF"/>
+    </linearGradient>
+  </defs>
+  <path d="M43 14.5 V38.5 A11 11 0 0 1 21 38.5" fill="none" stroke="url(#jf-blue)" stroke-width="9.5" stroke-linecap="round"/>
+  <path d="M20 14.5 L20 28.5 L32 21.5 Z" fill="#7DB3FF" stroke="#7DB3FF" stroke-width="2" stroke-linejoin="round"/>
+</svg>

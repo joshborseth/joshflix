@@ -39,6 +39,8 @@ slint-build = "1.18.1"
 
 [profile.dev]
 debug = "line-tables-only"
+# The dev box disk is small and shared; incremental caches grow by gigabytes.
+incremental = false
 
 [profile.dev.package."*"]
 opt-level = 2

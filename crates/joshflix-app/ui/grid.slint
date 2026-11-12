@@ -1,0 +1,158 @@
+import { Theme, Icons } from "theme.slint";
+import { Poster, Row, TrackItem } from "types.slint";
+import { PosterCard, PosterRow, Chip, Spinner, OptionList } from "components.slint";
+
+// Poster grid with focus scrolling. Used by Discover and My List.
+export component PosterGrid inherits Rectangle {
+    in property <[Poster]> items;
+    in property <int> columns: 6;
+    in property <int> focused-index: -1;
+    in property <bool> centered: false;
+    property <length> cell-w: Theme.poster-w + 18px;
+    property <length> cell-h: Theme.poster-h + 52px;
+    property <int> focused-line: root.focused-index < 0 ? 0 : floor(root.focused-index / root.columns);
+    property <length> grid-w: root.columns * root.cell-w;
+    clip: true;
+
+    Rectangle {
+        x: root.centered ? (root.width - root.grid-w) / 2 : 0px;
+        y: 8px - max(0, root.focused-line - 1) * root.cell-h;
+        width: root.grid-w;
+        animate y { duration: Theme.med; easing: ease-out-quart; }
+        for item[i] in root.items: PosterCard {
+            x: mod(i, root.columns) * root.cell-w + 6px;
+            y: floor(i / root.columns) * root.cell-h;
+            item: item;
+            show-title: true;
+            focused: i == root.focused-index;
+        }
+    }
+}
+
+export component DiscoverScreen inherits Rectangle {
+    in property <[string]> filters;        // "Movies", "Popular", "All genres"
+    in property <[Poster]> items;
+    in property <bool> loading;
+    in property <bool> active;
+    in property <int> zone;                // 0 filters, 1 grid
+    in property <int> filter-index;
+    in property <int> grid-index;
+    in property <int> columns: 6;
+    // Picker
+    in property <bool> picker-open;
+    in property <string> picker-title;
+    in property <[TrackItem]> picker-options;
+    in property <int> picker-index;
+    in property <length> left-pad: Theme.rail-collapsed + 28px;
+    background: Theme.bg;
+
+    Text {
+        x: root.left-pad;
+        y: Theme.safe-y;
+        text: "Discover";
+        color: Theme.text;
+        font-size: Theme.text-2xl;
+        font-weight: 900;
+    }
+    HorizontalLayout {
+        x: root.left-pad;
+        y: Theme.safe-y + 40px;
+        height: 28px;
+        spacing: 10px;
+        alignment: start;
+        for filter[i] in root.filters: Chip {
+            label: filter + "  ▾";
+            selected: true;
+            focused: root.active && root.zone == 0 && i == root.filter-index;
+        }
+    }
+    if root.loading && root.items.length == 0: Spinner {
+        x: root.left-pad;
+        y: Theme.safe-y + 96px;
+    }
+    PosterGrid {
+        x: root.left-pad - 6px;
+        y: Theme.safe-y + 84px;
+        width: root.width - self.x - 12px;
+        height: root.height - self.y;
+        items: root.items;
+        columns: root.columns;
+        focused-index: root.active && root.zone == 1 ? root.grid-index : -1;
+    }
+    if root.picker-open: OptionList {
+        x: root.left-pad + root.filter-index * 120px;
+        y: Theme.safe-y + 76px;
+        title: root.picker-title;
+        options: root.picker-options;
+        focused-index: root.picker-index;
+    }
+}
+
+export component MyListScreen inherits Rectangle {
+    in property <Row> continue-row;
+    in property <[Poster]> items;
+    in property <bool> active;
+    in property <int> zone;                // 0 continue watching, 1 grid
+    in property <int> grid-index;
+    in property <int> columns: 6;
+    in property <length> left-pad: Theme.rail-collapsed + 28px;
+    property <bool> has-continue: root.continue-row.items.length > 0;
+    background: Theme.bg;
+
+    Text {
+        x: root.left-pad;
+        y: Theme.safe-y;
+        text: "My List";
+        color: Theme.text;
+        font-size: Theme.text-2xl;
+        font-weight: 900;
+    }
+    if root.has-continue: PosterRow {
+        y: Theme.safe-y + 44px - (root.zone == 1 ? 210px : 0px);
+        data: root.continue-row;
+        left-pad: root.left-pad;
+        active: root.active && root.zone == 0;
+        opacity: root.zone == 1 ? 0 : 1;
+        animate y, opacity { duration: Theme.med; easing: ease-out-quart; }
+    }
+    if root.items.length == 0: VerticalLayout {
+        x: root.left-pad;
+        y: root.has-continue ? Theme.safe-y + 250px : Theme.safe-y + 60px;
+        width: 420px;
+        height: self.preferred-height;
+        spacing: 8px;
+        alignment: start;
+        Text {
+            text: "Nothing saved yet";
+            color: Theme.text;
+            font-size: Theme.text-xl;
+            font-weight: 800;
+        }
+        Text {
+            text: "Open any movie or show and choose “My List” to save it here.";
+            color: Theme.text-muted;
+            font-size: Theme.text-md;
+            wrap: word-wrap;
+        }
+    }
+    if root.items.length > 0: Text {
+        x: root.left-pad;
+        y: root.has-continue && root.zone == 0 ? Theme.safe-y + 252px : Theme.safe-y + 44px;
+        text: "Saved";
+        color: root.zone == 1 ? Theme.text : Theme.text-muted;
+        font-size: Theme.text-lg;
+        font-weight: 700;
+        animate y { duration: Theme.med; easing: ease-out-quart; }
+    }
+    PosterGrid {
+        x: root.left-pad - 6px;
+        y: root.has-continue && root.zone == 0 ? Theme.safe-y + 278px : Theme.safe-y + 70px;
+        width: root.width - root.left-pad - Theme.safe-x;
+        height: root.height - self.y;
+        items: root.items;
+        columns: root.columns;
+        centered: true;
+        focused-index: root.active && root.zone == 1 ? root.grid-index : -1;
+        animate y { duration: Theme.med; easing: ease-out-quart; }
+    }
+}

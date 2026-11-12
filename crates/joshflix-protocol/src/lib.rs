@@ -43,7 +43,7 @@ pub struct CreatePairingResponse {
     pub code: String,
     /// Secret only the TV knows. Required to read the submitted key.
     pub tv_secret: String,
-    /// Full URL the phone opens (the QR content), e.g. `http://192.168.1.67:8787/p/<code>`.
+    /// Full URL the phone opens (the QR content), e.g. `http://192.168.1.67:8788/p/<code>`.
     pub phone_url: String,
     /// Seconds until the pairing expires.
     pub expires_in_secs: u64,
@@ -57,7 +57,8 @@ pub enum PairingState {
     Pending,
     /// The phone opened the page (the TV can say "Phone connected").
     PhoneOpened,
-    /// The key is included in this response; the relay has now forgotten it.
+    /// The key is included in the first response with this state; the relay
+    /// then forgets it (later polls carry only the username).
     Delivered,
     /// The pairing expired or was cancelled.
     Expired,

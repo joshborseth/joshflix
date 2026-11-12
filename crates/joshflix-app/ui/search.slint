@@ -1,0 +1,118 @@
+import { Theme, Icons } from "theme.slint";
+import { Row, KeyCap } from "types.slint";
+import { KeyboardGrid, PosterRow, Spinner } from "components.slint";
+
+export component SearchScreen inherits Rectangle {
+    in property <string> query;
+    in property <[KeyCap]> keys;
+    in property <int> key-index;
+    in property <[Row]> rows;           // Movies, Shows
+    in property <int> focused-row;
+    in property <bool> keyboard-active; // focus zone: keyboard vs results
+    in property <bool> active;          // false while the rail has focus
+    in property <bool> searching;
+    in property <string> hint;
+    in property <length> left-pad: Theme.rail-collapsed + 28px;
+
+    property <length> kb-w: 6 * (34px + 5px) - 5px;
+    background: Theme.bg;
+
+    // Keyboard column.
+    Rectangle {
+        x: root.left-pad;
+        y: Theme.safe-y + 6px;
+        width: root.kb-w;
+        height: root.height - 2 * Theme.safe-y;
+
+        // Query field.
+        Rectangle {
+            y: 0;
+            height: 40px;
+            border-radius: Theme.radius;
+            background: Theme.surface;
+            border-width: 1px;
+            border-color: root.active && root.keyboard-active ? Theme.accent : Theme.border;
+            Image {
+                x: 12px;
+                width: 16px;
+                height: 16px;
+                source: Icons.search;
+                colorize: Theme.text-muted;
+            }
+            Text {
+                x: 36px;
+                width: parent.width - 48px;
+                text: root.query == "" ? "Search movies and shows" : root.query;
+                color: root.query == "" ? Theme.text-faint : Theme.text;
+                font-size: Theme.text-lg;
+                font-weight: root.query == "" ? 400 : 600;
+                overflow: elide;
+            }
+            // Caret.
+            Rectangle {
+                x: 36px + min(caret-measure.preferred-width, parent.width - 50px) + 2px;
+                width: 2px;
+                height: 18px;
+                background: Theme.accent;
+                visible: root.active && root.keyboard-active && root.query != "";
+                opacity: mod(animation-tick() / 1ms, 1000) < 520 ? 1 : 0;
+            }
+            caret-measure := Text {
+                visible: false;
+                text: root.query;
+                font-size: Theme.text-lg;
+                font-weight: 600;
+            }
+        }
+
+        KeyboardGrid {
+            y: 54px;
+            keys: root.keys;
+            columns: 6;
+            rows: 7;
+            focused-index: root.active && root.keyboard-active ? root.key-index : -1;
+        }
+
+        Text {
+            y: 54px + 7 * 39px + 8px;
+            width: parent.width;
+            text: "Tip: press Right to jump to results";
+            color: Theme.text-faint;
+            font-size: Theme.text-xs;
+            wrap: word-wrap;
+        }
+    }
+
+    // Results.
+    Rectangle {
+        x: root.left-pad + root.kb-w + 14px;
+        y: Theme.safe-y;
+        width: root.width - self.x;
+        height: root.height - Theme.safe-y;
+        clip: true;
+
+        if root.searching: Spinner {
+            x: 0;
+            y: 16px;
+        }
+        if !root.searching && root.hint != "": Text {
+            x: 0;
+            y: 18px;
+            width: parent.width - Theme.safe-x;
+            text: root.hint;
+            color: Theme.text-muted;
+            font-size: Theme.text-lg;
+            wrap: word-wrap;
+        }
+        VerticalLayout {
+            y: (root.hint != "" || root.searching ? 56px : 6px) - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
+            alignment: start;
+            animate y { duration: Theme.med; easing: ease-out-quart; }
+            for row[i] in root.rows: PosterRow {
+                data: row;
+                left-pad: 14px;
+                active: root.active && !root.keyboard-active && i == root.focused-row;
+            }
+        }
+    }
+}

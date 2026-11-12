@@ -56,6 +56,15 @@ impl Relay {
             .send()
             .await
             .map_err(|source| CoreError::Network { service: SERVICE, source })?;
+        // Unknown code (expired a while ago, or the relay restarted): treat as expired.
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(PairingPoll {
+                state: joshflix_protocol::PairingState::Expired,
+                api_key: None,
+                username: None,
+                expires_in_secs: 0,
+            });
+        }
         read(response).await
     }
 
@@ -69,13 +78,14 @@ impl Relay {
     ) -> Result<PairingPoll> {
         let mut failures = 0;
         loop {
-            if *cancel.borrow() {
+            let cancelled = *cancel.borrow();
+            if cancelled {
                 let _ = self.cancel(pairing).await;
                 return Err(CoreError::Cancelled);
             }
             let poll = tokio::select! {
                 result = self.poll(pairing) => result,
-                _ = cancel.wait_for(|c| *c) => {
+                () = async { let _ = cancel.wait_for(|c| *c).await; } => {
                     let _ = self.cancel(pairing).await;
                     return Err(CoreError::Cancelled);
                 }

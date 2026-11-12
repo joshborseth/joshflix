@@ -1,0 +1,427 @@
+import { Theme, Icons } from "theme.slint";
+import { KeyCap, DetailButton } from "types.slint";
+import { PillButton, KeyboardGrid, Spinner } from "components.slint";
+
+// Real-Debrid key entry: QR to the phone relay, or type it with the remote.
+// Used by onboarding and Settings → Real-Debrid.
+export component PairingPanel inherits Rectangle {
+    in property <image> qr;
+    in property <bool> has-qr;
+    in property <string> url;
+    // 0 loading, 1 waiting, 2 phone connected, 3 checking key, 4 signed in, 5 error
+    in property <int> state;
+    in property <string> status;
+    in property <string> account;          // "Signed in as josh · Premium · 213 days left"
+    in property <bool> typing;
+    in property <string> typed;            // masked
+    in property <[KeyCap]> keys;
+    in property <int> key-index;
+    in property <[DetailButton]> actions;
+    in property <int> action-index;
+    in property <bool> active;
+    height: 300px;
+
+    // QR card.
+    Rectangle {
+        x: 0;
+        y: 0;
+        width: 210px;
+        height: 290px;
+        border-radius: Theme.radius-lg;
+        background: Theme.surface;
+        border-width: 1px;
+        border-color: Theme.border;
+
+        Rectangle {
+            x: 25px;
+            y: 22px;
+            width: 160px;
+            height: 160px;
+            border-radius: Theme.radius;
+            background: white;
+            if root.has-qr: Image {
+                width: 144px;
+                height: 144px;
+                source: root.qr;
+                image-rendering: pixelated;
+            }
+            if !root.has-qr: Spinner { }
+            opacity: root.state == 4 ? 0.25 : 1;
+        }
+        if root.state == 4: Rectangle {
+            x: 25px + 56px;
+            y: 22px + 56px;
+            width: 48px;
+            height: 48px;
+            border-radius: 24px;
+            background: Theme.success;
+            Image {
+                width: 26px;
+                height: 26px;
+                source: Icons.check;
+                colorize: #0b0d12;
+            }
+        }
+        VerticalLayout {
+            x: 14px;
+            y: 192px;
+            width: parent.width - 28px;
+            height: parent.height - 200px;
+            spacing: 6px;
+            alignment: start;
+            HorizontalLayout {
+                spacing: 6px;
+                alignment: center;
+                Image {
+                    source: Icons.phone;
+                    width: 13px;
+                    height: 13px;
+                    colorize: Theme.accent-light;
+                }
+                Text {
+                    text: "Scan with your phone";
+                    color: Theme.text;
+                    font-size: Theme.text-md;
+                    font-weight: 700;
+                }
+            }
+            Text {
+                text: root.url;
+                color: Theme.text-faint;
+                font-size: Theme.text-xs;
+                horizontal-alignment: center;
+                wrap: char-wrap;
+            }
+            HorizontalLayout {
+                alignment: center;
+                spacing: 6px;
+                Rectangle {
+                    width: 7px;
+                    height: 7px;
+                    y: 4px;
+                    border-radius: 4px;
+                    background: root.state == 5 ? Theme.danger : (root.state == 4 ? Theme.success : (root.state >= 2 ? Theme.accent : Theme.warning));
+                    opacity: root.state == 1 ? (mod(animation-tick() / 1ms, 1400) < 700 ? 1 : 0.35) : 1;
+                }
+                Text {
+                    text: root.status;
+                    color: root.state == 5 ? Theme.danger : Theme.text-muted;
+                    font-size: Theme.text-sm;
+                    wrap: word-wrap;
+                    horizontal-alignment: center;
+                }
+            }
+        }
+    }
+
+    // Right column.
+    Rectangle {
+        x: 232px;
+        y: 0;
+        width: root.width - 232px;
+        height: 290px;
+
+        if root.state == 4: VerticalLayout {
+            spacing: 12px;
+            alignment: start;
+            Rectangle {
+                height: 60px;
+                border-radius: Theme.radius;
+                background: #34d3991f;
+                border-width: 1px;
+                border-color: #34d39966;
+                HorizontalLayout {
+                    padding-left: 14px;
+                    spacing: 10px;
+                    Image {
+                        source: Icons.check;
+                        width: 18px;
+                        height: 18px;
+                        y: (parent.height - self.height) / 2;
+                        colorize: Theme.success;
+                    }
+                    Text {
+                        text: root.account;
+                        color: Theme.text;
+                        font-size: Theme.text-md;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        if root.typing: VerticalLayout {
+            spacing: 10px;
+            alignment: start;
+            Rectangle {
+                height: 36px;
+                border-radius: Theme.radius;
+                background: Theme.surface;
+                border-width: 1px;
+                border-color: Theme.accent;
+                Text {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    text: root.typed == "" ? "Type your API key" : root.typed;
+                    color: root.typed == "" ? Theme.text-faint : Theme.text;
+                    font-size: Theme.text-md;
+                    font-weight: 600;
+                    letter-spacing: 1px;
+                    overflow: elide;
+                }
+            }
+            KeyboardGrid {
+                keys: root.keys;
+                columns: 10;
+                rows: 5;
+                key-size: 28px;
+                focused-index: root.active ? root.key-index : -1;
+            }
+        }
+
+        if !root.typing: VerticalLayout {
+            y: root.state == 4 ? 76px : 0px;
+            spacing: 10px;
+            alignment: start;
+            for action[i] in root.actions: HorizontalLayout {
+                alignment: start;
+                PillButton {
+                    label: action.label;
+                    icon: action.icon;
+                    primary: action.primary;
+                    focused: root.active && i == root.action-index;
+                }
+            }
+            Rectangle { height: 4px; }
+            Text {
+                text: "Get your key at real-debrid.com/apitoken";
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+            }
+            Text {
+                text: "No Real-Debrid account? Sign up at real-debrid.com";
+                color: Theme.text-faint;
+                font-size: Theme.text-sm;
+            }
+        }
+    }
+}
+
+component FloatingPoster inherits Rectangle {
+    in property <angle> tilt;
+    in property <length> bob;
+    in property <color> tint-a;
+    in property <color> tint-b;
+    width: 96px;
+    height: 144px;
+    border-radius: 12px;
+    background: @linear-gradient(160deg, tint-a 0%, tint-b 100%);
+    border-width: 1px;
+    border-color: #ffffff1f;
+    drop-shadow-blur: 24px;
+    drop-shadow-color: #00000099;
+    transform-rotation: tilt;
+    transform-origin: { x: self.width / 2, y: self.height };
+}
+
+export component OnboardingScreen inherits Rectangle {
+    in property <int> step;                // 0 welcome, 1 Real-Debrid
+    in property <bool> leaving;            // welcome exit animation
+    // Pairing
+    in property <image> qr;
+    in property <bool> has-qr;
+    in property <string> url;
+    in property <int> pair-state;
+    in property <string> pair-status;
+    in property <string> account;
+    in property <bool> typing;
+    in property <string> typed;
+    in property <[KeyCap]> keys;
+    in property <int> key-index;
+    in property <[DetailButton]> actions;
+    in property <int> action-index;
+    background: Theme.bg;
+
+    // Ambient glow.
+    Rectangle {
+        x: root.width * 0.55;
+        y: -root.height * 0.3;
+        width: root.width * 0.7;
+        height: root.width * 0.7;
+        border-radius: self.width / 2;
+        background: @radial-gradient(circle, #3d8bff33 0%, #3d8bff00 70%);
+    }
+
+    // ---- Welcome ----
+    property <float> t: animation-tick() / 1s;
+    welcome := Rectangle {
+        opacity: root.step == 0 && !root.leaving ? 1 : 0;
+        transform-scale: root.step == 0 && !root.leaving ? 1.0 : 0.94;
+        transform-origin: { x: self.width / 2, y: self.height / 2 };
+        animate opacity, transform-scale { duration: 600ms; easing: ease-in-out; }
+        visible: self.opacity > 0.01;
+
+        Rectangle {
+            x: (root.width - 300px) / 2;
+            y: root.height * 0.12;
+            width: 300px;
+            height: 170px;
+            FloatingPoster {
+                x: 22px;
+                y: 18px + 4px * sin(root.t * 1.1rad);
+                tilt: -13deg;
+                tint-a: #2a3550;
+                tint-b: #151923;
+            }
+            FloatingPoster {
+                x: 182px;
+                y: 18px + 4px * sin(root.t * 1.1rad + 2rad);
+                tilt: 13deg;
+                tint-a: #1f2c4d;
+                tint-b: #141a28;
+            }
+            FloatingPoster {
+                x: 102px;
+                y: 4px + 5px * sin(root.t * 1.3rad + 1rad);
+                tilt: 0deg;
+                tint-a: #3d8bff;
+                tint-b: #1f5fd1;
+                Rectangle {
+                    width: 40px;
+                    height: 40px;
+                    border-radius: 20px;
+                    background: #ffffff2e;
+                    Image {
+                        x: 13px;
+                        width: 18px;
+                        height: 18px;
+                        source: Icons.play;
+                        colorize: white;
+                    }
+                }
+            }
+            for spark[i] in [
+                { x: 6px, y: 30px, phase: 0.0 },
+                { x: 284px, y: 56px, phase: 1.7 },
+                { x: 252px, y: 4px, phase: 3.1 },
+                { x: 40px, y: 140px, phase: 4.2 },
+            ]: Rectangle {
+                x: spark.x;
+                y: spark.y;
+                width: 6px;
+                height: 6px;
+                border-radius: 3px;
+                background: Theme.accent-light;
+                opacity: 0.35 + 0.65 * abs(sin((root.t * 1.6 + spark.phase) * 1rad));
+            }
+        }
+
+        VerticalLayout {
+            x: (root.width - self.width) / 2;
+            y: root.height * 0.12 + 196px;
+            width: min(560px, root.width - 80px);
+            spacing: 10px;
+            alignment: start;
+            Text {
+                text: "Joshflix";
+                color: @linear-gradient(90deg, Theme.accent-light 0%, Theme.accent 60%, #8f7dff 100%);
+                font-size: 52px;
+                font-weight: 900;
+                horizontal-alignment: center;
+                letter-spacing: -1px;
+            }
+            Text {
+                text: "Movies and shows, streaming the moment you press play.";
+                color: Theme.text;
+                font-size: Theme.text-xl;
+                font-weight: 700;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Text {
+                text: "Joshflix finds sources with Comet and streams them straight from Real-Debrid. Set up once, then just watch.";
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                horizontal-alignment: center;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 10px; }
+            HorizontalLayout {
+                alignment: center;
+                PillButton {
+                    label: "Get started";
+                    icon: Icons.chevron-right;
+                    focused: root.step == 0;
+                    primary: true;
+                }
+            }
+        }
+    }
+
+    // ---- Real-Debrid ----
+    rd := Rectangle {
+        opacity: root.step == 1 ? 1 : 0;
+        animate opacity { duration: 500ms; easing: ease-out; }
+        visible: self.opacity > 0.01;
+
+        VerticalLayout {
+            x: (root.width - self.width) / 2;
+            y: Theme.safe-y + 6px;
+            width: min(680px, root.width - 2 * Theme.safe-x);
+            spacing: 8px;
+            alignment: start;
+            HorizontalLayout {
+                Text {
+                    text: "JOSHFLIX";
+                    color: Theme.accent-light;
+                    font-size: Theme.text-sm;
+                    font-weight: 800;
+                    letter-spacing: 1.5px;
+                }
+                Text {
+                    text: "Step 1 of 1";
+                    color: Theme.text-faint;
+                    font-size: Theme.text-sm;
+                    horizontal-alignment: right;
+                }
+            }
+            Rectangle {
+                height: 3px;
+                border-radius: 2px;
+                background: root.pair-state == 4 ? Theme.accent : Theme.surface-3;
+                animate background { duration: Theme.slow; }
+            }
+            Rectangle { height: 8px; }
+            Text {
+                text: "Add your Real-Debrid key";
+                color: Theme.text;
+                font-size: Theme.text-2xl;
+                font-weight: 900;
+            }
+            Text {
+                text: "Real-Debrid is a premium service that unlocks instant streaming from torrent sources. Joshflix doesn't make any money from Real-Debrid, and you can use the same account in other apps.";
+                color: Theme.text-muted;
+                font-size: Theme.text-md;
+                wrap: word-wrap;
+            }
+            Rectangle { height: 8px; }
+            PairingPanel {
+                qr: root.qr;
+                has-qr: root.has-qr;
+                url: root.url;
+                state: root.pair-state;
+                status: root.pair-status;
+                account: root.account;
+                typing: root.typing;
+                typed: root.typed;
+                keys: root.keys;
+                key-index: root.key-index;
+                actions: root.actions;
+                action-index: root.action-index;
+                active: root.step == 1;
+            }
+        }
+    }
+}

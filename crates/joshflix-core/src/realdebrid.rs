@@ -365,7 +365,7 @@ async fn sleep_or_cancel(duration: Duration, cancel: &watch::Receiver<bool>) -> 
     let mut cancel = cancel.clone();
     tokio::select! {
         () = tokio::time::sleep(duration) => Ok(()),
-        _ = cancel.wait_for(|c| *c) => Err(CoreError::Cancelled),
+        () = async { let _ = cancel.wait_for(|c| *c).await; } => Err(CoreError::Cancelled),
     }
 }
 

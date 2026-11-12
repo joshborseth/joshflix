@@ -1,4 +1,19 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <rect width="64" height="64" rx="14" fill="#c026d3"/>
-  <text x="32" y="32" dy="0.35em" text-anchor="middle" font-family="ui-sans-serif, system-ui, -apple-system, sans-serif" font-size="32" font-weight="600" fill="#ffffff">J</text>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64">
+  <!-- Joshflix app icon: a monoline J with a play mark, on the near-black UI color. -->
+  <defs>
+    <linearGradient id="jf-blue" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#7DB3FF"/>
+      <stop offset="1" stop-color="#3D8BFF"/>
+    </linearGradient>
+    <radialGradient id="jf-glow" cx="0.72" cy="0.85" r="0.75">
+      <stop offset="0" stop-color="#3D8BFF" stop-opacity="0.28"/>
+      <stop offset="1" stop-color="#3D8BFF" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+  <rect width="64" height="64" rx="14" fill="#0B0D12"/>
+  <rect width="64" height="64" rx="14" fill="url(#jf-glow)"/>
+  <g id="jf-mark">
+    <path d="M43 14.5 V38.5 A11 11 0 0 1 21 38.5" fill="none" stroke="url(#jf-blue)" stroke-width="9.5" stroke-linecap="round"/>
+    <path d="M20 14.5 L20 28.5 L32 21.5 Z" fill="#7DB3FF" stroke="#7DB3FF" stroke-width="2" stroke-linejoin="round"/>
+  </g>
 </svg>
