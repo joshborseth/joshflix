@@ -62,6 +62,9 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(3)
         .thread_name("joshflix-io")
+        // Artwork decodes run here; on a TV's few slow cores they must not
+        // take time from the UI thread while it animates.
+        .on_thread_start(platform::lower_thread_priority)
         .enable_all()
         .build()
         .map_err(|e| format!("runtime: {e}"))?;

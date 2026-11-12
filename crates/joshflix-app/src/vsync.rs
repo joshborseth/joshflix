@@ -119,6 +119,7 @@ impl Vsync {
         std::thread::Builder::new()
             .name("vsync".into())
             .spawn(move || {
+                crate::platform::raise_to_display_priority();
                 let looper = ThreadLooper::prepare();
                 // SAFETY: called on a thread with a looper, as required.
                 let choreographer = unsafe { get_instance() };

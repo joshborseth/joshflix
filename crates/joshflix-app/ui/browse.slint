@@ -84,7 +84,11 @@ export component BrowseScreen inherits Rectangle {
             image-fit: contain;
             horizontal-alignment: left;
         }
-        if !root.hero.has-logo: Text {
+        // Hold the logo's space while it loads, so the plain title never flashes.
+        if root.hero.logo-pending: Rectangle {
+            height: 64px;
+        }
+        if !root.hero.has-logo && !root.hero.logo-pending: Text {
             text: root.hero.title;
             color: Theme.text;
             font-size: Theme.text-3xl;
@@ -128,7 +132,9 @@ export component BrowseScreen inherits Rectangle {
         }
     }
 
-    // Rows, scrolled so the focused row sits just under the hero.
+    // Rows, scrolled so the focused row sits just under the hero. Rows above
+    // it slide out under the clip edge. They don't fade: a fading row is
+    // redrawn into an offscreen texture every frame, which TV GPUs can't afford.
     Rectangle {
         y: root.hero-h - 22px;
         height: root.height - self.y;
@@ -137,13 +143,11 @@ export component BrowseScreen inherits Rectangle {
             y: -root.scroll-y;
             height: self.preferred-height;
             alignment: start;
-            animate y { duration: Theme.med; easing: ease-out-quart; }
+            animate y { duration: Theme.scroll; easing: cubic-bezier(0.2, 0.6, 0.3, 1); }
             for row[i] in root.rows: PosterRow {
                 data: row;
                 active: root.active && i == root.focused-row;
                 left-pad: root.left-pad;
-                opacity: i < root.focused-row ? 0 : 1;
-                animate opacity { duration: Theme.fast; }
             }
         }
     }

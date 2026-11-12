@@ -112,6 +112,30 @@ impl Platform for Desktop {
     }
 }
 
+/// Background threads (network, artwork decoding) run at a lower priority
+/// than the UI and player threads.
+pub fn lower_thread_priority() {
+    #[cfg(target_os = "android")]
+    set_thread_nice(10);
+}
+
+/// Raise the calling thread to Android's display priority (what the system
+/// gives UI and render threads), so animations keep their frames under load.
+#[cfg(target_os = "android")]
+pub fn raise_to_display_priority() {
+    set_thread_nice(-4);
+}
+
+/// Linux nice values are per thread: `setpriority` on the calling thread's id.
+#[cfg(target_os = "android")]
+fn set_thread_nice(nice: i32) {
+    // SAFETY: plain syscalls on the calling thread.
+    let result = unsafe { libc::setpriority(libc::PRIO_PROCESS, libc::gettid() as libc::id_t, nice) };
+    if result != 0 {
+        tracing::info!("thread priority {nice}: {}", std::io::Error::last_os_error());
+    }
+}
+
 #[cfg(target_os = "android")]
 pub mod android {
     //! Android TV implementation over JNI and the NDK.

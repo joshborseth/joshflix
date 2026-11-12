@@ -420,9 +420,13 @@ impl Controller {
         let hero = &item.hero;
         let state = BrowseState::get(&self.ui);
         let logo = hero.logo.as_deref().and_then(|url| self.images.request(url, ImageKind::Logo, ImageSlot::Named));
+        // While a logo is on its way, show no title rather than flashing the plain one.
+        let logo_pending =
+            logo.is_none() && hero.logo.as_deref().is_some_and(|url| !self.images.has_failed(url, ImageKind::Logo));
         state.set_hero(Hero {
             title: shared(&hero.title),
             has_logo: logo.is_some(),
+            logo_pending,
             logo: logo.unwrap_or_default(),
             meta: shared(&hero.meta),
             rating: shared(&hero.rating),
@@ -434,6 +438,32 @@ impl Controller {
             && let Some(image) = self.images.request(&url, ImageKind::Backdrop, ImageSlot::Named)
         {
             self.show_backdrop(browse, &url, &image);
+        }
+        self.prefetch_hero_neighbours(browse);
+    }
+
+    /// Load logos and backdrops for the titles one move away, so the hero
+    /// changes at once instead of waiting on the network and a decode.
+    fn prefetch_hero_neighbours(&mut self, browse: usize) {
+        let b = &self.browse[browse];
+        let mut heroes = Vec::new();
+        if let Some(row) = b.rows.get(b.row) {
+            for col in [row.focused + 1, row.focused.wrapping_sub(1)] {
+                heroes.extend(row.items.get(col).map(|item| item.hero.clone()));
+            }
+        }
+        for index in [b.row + 1, b.row.wrapping_sub(1)] {
+            if let Some(row) = b.rows.get(index) {
+                heroes.extend(row.items.get(row.focused).map(|item| item.hero.clone()));
+            }
+        }
+        for hero in heroes {
+            if let Some(url) = &hero.logo {
+                self.images.prefetch(url, ImageKind::Logo);
+            }
+            if let Some(url) = &hero.backdrop {
+                self.images.prefetch(url, ImageKind::Backdrop);
+            }
         }
     }
 
@@ -473,6 +503,21 @@ impl Controller {
             let mut hero = state.get_hero();
             hero.logo = image.clone();
             hero.has_logo = true;
+            hero.logo_pending = false;
+            state.set_hero(hero);
+        }
+    }
+
+    /// The hero's logo won't come: show the title as text instead.
+    pub(super) fn browse_logo_failed(&mut self, url: &str) {
+        if self.screen != crate::Screen::Browse {
+            return;
+        }
+        let browse = self.browse_index(self.section);
+        if self.browse[browse].hero_logo.as_deref() == Some(url) {
+            let state = BrowseState::get(&self.ui);
+            let mut hero = state.get_hero();
+            hero.logo_pending = false;
             state.set_hero(hero);
         }
     }

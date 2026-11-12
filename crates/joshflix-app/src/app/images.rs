@@ -33,6 +33,15 @@ impl ImageKind {
             Self::Thumb => (172.0 * 1.1, 97.0 * 1.1),
         }
     }
+
+    /// Corner radius (dp, at the decoded size) baked into card artwork, so the
+    /// UI can draw it without a rounded clip. Matches `Theme.radius` at 1.1x.
+    fn card_radius(self) -> Option<f32> {
+        match self {
+            Self::Poster | Self::Wide => Some(10.0 * 1.1),
+            _ => None,
+        }
+    }
 }
 
 /// Where a finished image goes.
@@ -109,13 +118,17 @@ impl ImageCache {
         }
         let (w, h) = kind.logical_size();
         let (w, h) = ((w * self.scale).ceil() as u32, (h * self.scale).ceil() as u32);
+        let radius = kind.card_radius().map(|r| r * self.scale);
         let loader = self.loader.clone();
         let limit = self.limit.clone();
         let url = url.to_owned();
         self.rt.spawn(async move {
             let result: Option<Pixels> = async {
                 let _permit = limit.acquire().await.ok()?;
-                let decoded = loader.load(&url, w, h).await.ok()?;
+                let decoded = match radius {
+                    Some(radius) => loader.load_card(&url, w, h, radius).await.ok()?,
+                    None => loader.load(&url, w, h).await.ok()?,
+                };
                 Some(SharedPixelBuffer::clone_from_slice(&decoded.rgba, decoded.width, decoded.height))
             }
             .await;
@@ -124,6 +137,16 @@ impl ImageCache {
             });
         });
         None
+    }
+
+    /// Start loading an image nobody shows yet, so it's ready when focus arrives.
+    pub fn prefetch(&mut self, url: &str, kind: ImageKind) {
+        let _ = self.request(url, kind, ImageSlot::Named);
+    }
+
+    /// This image failed to load earlier, so it won't arrive.
+    pub fn has_failed(&self, url: &str, kind: ImageKind) -> bool {
+        self.failed.contains(&cache_key(url, kind, self.scale))
     }
 
     fn insert(&mut self, key: String, image: Image) {
@@ -149,6 +172,9 @@ impl Controller {
         let waiters = self.images.waiters.remove(&key).unwrap_or_default();
         let Some(pixels) = pixels else {
             self.images.failed.insert(key);
+            if kind == ImageKind::Logo && waiters.iter().any(|w| matches!(w, ImageSlot::Named)) {
+                self.browse_logo_failed(&url);
+            }
             return;
         };
         let image = Image::from_rgba8(pixels);

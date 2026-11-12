@@ -361,6 +361,63 @@ impl TvPlatform {
     }
 }
 
+/// Frames closer together than this belong to one animation.
+const STATS_GAP_NS: i64 = 100_000_000;
+/// How often the frame summary goes to the log while the UI animates.
+const STATS_WINDOW_NS: i64 = 10_000_000_000;
+
+/// Frame pacing summary for the TV log, to see whether animations drop frames.
+#[derive(Default)]
+struct FrameStats {
+    start_ns: i64,
+    frames: u32,
+    /// Frames that followed another frame of the same animation.
+    paced: u32,
+    /// Vsyncs that passed without a new frame during animations.
+    missed: u64,
+    /// Frames that missed at least one vsync.
+    late: u32,
+    render_ns: Vec<i64>,
+}
+
+impl FrameStats {
+    fn frame(&mut self, now_ns: i64, render_ns: i64, skipped: Option<u64>) {
+        if self.frames == 0 {
+            self.start_ns = now_ns;
+        }
+        self.frames += 1;
+        self.render_ns.push(render_ns);
+        if let Some(skipped) = skipped {
+            self.paced += 1;
+            self.missed += skipped;
+            self.late += u32::from(skipped > 0);
+        }
+        if now_ns - self.start_ns >= STATS_WINDOW_NS {
+            self.report();
+            *self = Self::default();
+        }
+    }
+
+    fn report(&mut self) {
+        // Single redraws (a focus change with no animation) say nothing about pacing.
+        if self.paced < 30 {
+            return;
+        }
+        self.render_ns.sort_unstable();
+        let ms = |ns: i64| ns as f64 / 1e6;
+        let pick = |q: f64| self.render_ns[((self.render_ns.len() - 1) as f64 * q) as usize];
+        tracing::info!(
+            "frames: {} animated, {} late, {} vsyncs missed; render+swap median {:.1} ms, p95 {:.1} ms, max {:.1} ms",
+            self.paced,
+            self.late,
+            self.missed,
+            ms(pick(0.5)),
+            ms(pick(0.95)),
+            ms(pick(1.0)),
+        );
+    }
+}
+
 impl Platform for TvPlatform {
     fn create_window_adapter(&self) -> Result<Rc<dyn WindowAdapter>, PlatformError> {
         Ok(self.window.clone())
@@ -383,8 +440,10 @@ impl Platform for TvPlatform {
     }
 
     fn run_event_loop(&self) -> Result<(), PlatformError> {
+        crate::platform::raise_to_display_priority();
         let mut rendered_seq = 0u64;
         let mut last_render_ns = 0i64;
+        let mut stats = FrameStats::default();
         loop {
             // While frames are flowing, animate to the latest vsync so every
             // frame advances by exactly one refresh, whenever the loop runs.
@@ -406,9 +465,13 @@ impl Platform for TvPlatform {
                 || seq != rendered_seq
                 || now_ns - last_render_ns > VSYNC_TIMEOUT.as_nanos() as i64;
             if wants_frame && vsync_ready {
+                // Vsyncs that passed since the previous frame of an ongoing animation.
+                let skipped = (now_ns - last_render_ns < STATS_GAP_NS && self.vsync.is_some())
+                    .then(|| seq.saturating_sub(rendered_seq).saturating_sub(1));
                 rendered_seq = seq;
                 last_render_ns = now_ns;
                 self.render();
+                stats.frame(now_ns, vsync::monotonic_ns() - now_ns, skipped);
             }
 
             let pending = self.window.has_surface.get()

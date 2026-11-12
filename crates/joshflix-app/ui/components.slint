@@ -26,12 +26,15 @@ export component PosterCard inherits Rectangle {
             on: root.focused;
         }
 
+        // No clip: the artwork's corners are rounded when it's decoded
+        // (ImageKind::card_radius). A rounded clip renders each card into its
+        // own offscreen texture, which is what made rows stutter on TVs.
         art := Rectangle {
             border-radius: Theme.radius;
             background: Theme.surface-2;
-            clip: true;
 
             if !root.item.has-image: Rectangle {
+                border-radius: Theme.radius;
                 background: @linear-gradient(160deg, Theme.surface-3 0%, Theme.surface 100%);
                 Text {
                     x: 8px;
@@ -54,12 +57,16 @@ export component PosterCard inherits Rectangle {
                 animate opacity { duration: Theme.med; }
             }
             if root.item.progress > 0: Rectangle {
-                y: parent.height - 4px;
+                x: 6px;
+                y: parent.height - 10px;
+                width: parent.width - 12px;
                 height: 4px;
-                background: #00000099;
+                border-radius: 2px;
+                background: #000000aa;
                 Rectangle {
                     x: 0;
                     width: parent.width * clamp(root.item.progress, 0, 1);
+                    border-radius: 2px;
                     background: Theme.accent;
                 }
             }
@@ -119,10 +126,10 @@ export component WideCard inherits Rectangle {
             on: root.focused;
         }
 
+        // No clip, as in PosterCard: the artwork has rounded corners baked in.
         art := Rectangle {
             border-radius: Theme.radius;
             background: Theme.surface-2;
-            clip: true;
 
             Image {
                 width: parent.width;
@@ -133,6 +140,7 @@ export component WideCard inherits Rectangle {
                 animate opacity { duration: Theme.med; }
             }
             Rectangle {
+                border-radius: Theme.radius;
                 background: @linear-gradient(180deg, #00000000 45%, #000000cc 100%);
             }
             Text {
@@ -159,13 +167,17 @@ export component WideCard inherits Rectangle {
                     color: white;
                 }
             }
-            Rectangle {
-                y: parent.height - 4px;
-                height: 4px;
-                background: root.item.progress > 0 ? #ffffff33 : transparent;
+            if root.item.progress > 0: Rectangle {
+                x: 10px;
+                y: parent.height - 8px;
+                width: parent.width - 20px;
+                height: 3px;
+                border-radius: 1.5px;
+                background: #ffffff33;
                 Rectangle {
                     x: 0;
                     width: parent.width * clamp(root.item.progress, 0, 1);
+                    border-radius: 1.5px;
                     background: Theme.accent;
                 }
             }
@@ -232,7 +244,7 @@ export component PosterRow inherits Rectangle {
         y: 28px;
         width: root.data.items.length * (root.card-w + Theme.card-gap);
         height: root.card-h;
-        animate x { duration: Theme.med; easing: ease-out-quart; }
+        animate x { duration: Theme.scroll; easing: cubic-bezier(0.2, 0.6, 0.3, 1); }
 
         for item[i] in root.data.items: Rectangle {
             x: i * (root.card-w + Theme.card-gap);

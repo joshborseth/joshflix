@@ -65,6 +65,9 @@ export global Theme {
     out property <duration> fast: 140ms;
     out property <duration> med: 220ms;
     out property <duration> slow: 380ms;
+    // Row scrolling. A softer curve than ease-out-quart, which covers a quarter
+    // of the distance in the first frame and reads as a jump on a 60 Hz TV.
+    out property <duration> scroll: 300ms;
 }
 
 export global Icons {
