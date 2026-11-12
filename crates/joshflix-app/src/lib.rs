@@ -4,6 +4,8 @@
 
 slint::include_modules!();
 
+#[cfg(target_os = "android")]
+mod android_platform;
 mod app;
 mod format;
 mod keyboard;
@@ -19,7 +21,6 @@ use joshflix_core::pairing::Relay;
 use joshflix_core::store::Store;
 use joshflix_core::subtitles::OpenSubtitles;
 use joshflix_core::update::Updater;
-use joshflix_player::{Player, PlayerConfig};
 use slint::ComponentHandle;
 
 use crate::app::{Controller, Services, with_controller};
@@ -33,8 +34,26 @@ pub const DEFAULT_SERVER: &str = match option_env!("JOSHFLIX_SERVER_URL") {
     None => "http://192.168.1.67:8788",
 };
 
+/// Development overrides from `<data dir>/dev.env` (`JOSHFLIX_*=value` lines).
+/// The file lives in app-private storage, so on Android only adb root or
+/// run-as can create it. Must run before any other thread starts.
+fn load_dev_env(dir: &std::path::Path) {
+    let Ok(text) = std::fs::read_to_string(dir.join("dev.env")) else { return };
+    for line in text.lines() {
+        if let Some((key, value)) = line.split_once('=') {
+            let key = key.trim();
+            if key.starts_with("JOSHFLIX_") {
+                tracing::info!("dev override: {key}");
+                // SAFETY: called at startup before the runtime or player threads exist.
+                unsafe { std::env::set_var(key, value.trim()) };
+            }
+        }
+    }
+}
+
 /// Build everything and run the UI until the window closes.
 pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
+    load_dev_env(&platform.data_dir());
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(3)
         .thread_name("joshflix-io")
@@ -57,15 +76,20 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     };
 
     let video = VideoHost::new();
-    let player = Player::new(&PlayerConfig::for_platform(), |event| {
-        let _ = slint::invoke_from_event_loop(move || with_controller(|c| c.on_player_event(event)));
-    });
-    video.set_player(player.map_err(|e| e.to_string()));
+    let compat = services
+        .store
+        .settings()
+        .ok()
+        .and_then(|s| s.video_compat_mode)
+        .unwrap_or_else(|| platform.is_emulator());
+    video.set_player(VideoHost::create_player(compat));
     video.attach(&ui);
 
     AppState::get(&ui).on_key(|key| {
         let mut handled = false;
         with_controller(|c| handled = c.on_key(&key));
+        #[cfg(target_os = "android")]
+        android_platform::report_key_handled(handled);
         handled
     });
 
@@ -79,16 +103,32 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
 
 #[cfg(target_os = "android")]
 #[unsafe(no_mangle)]
-fn android_main(app: slint::android::AndroidApp) {
+fn android_main(app: android_activity::AndroidApp) {
     android_logger::init_once(
         android_logger::Config::default()
             .with_max_level(log::LevelFilter::Info)
             .with_tag("joshflix"),
     );
     std::panic::set_hook(Box::new(|info| log::error!("panic: {info}")));
-    if let Err(e) = slint::android::init(app.clone()) {
-        log::error!("slint init: {e}");
-        return;
+    let tv = android_platform::TvPlatform::new(
+        app.clone(),
+        Box::new(|key| {
+            let mut handled = false;
+            with_controller(|c| handled = c.on_key(key));
+            handled
+        }),
+        Box::new(|visible| with_controller(|c| c.on_app_visibility(visible))),
+    );
+    match tv.map(|tv| slint::platform::set_platform(Box::new(tv))) {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            log::error!("set_platform: {e}");
+            return;
+        }
+        Err(e) => {
+            log::error!("platform: {e}");
+            return;
+        }
     }
     let platform = Rc::new(platform::android::Android::new(app));
     joshflix_player::android::set_java_vm(platform.vm_ptr());

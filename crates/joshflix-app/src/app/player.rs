@@ -40,6 +40,8 @@ struct NextCtl {
 pub struct PlayerCtl {
     pub request: PlayRequest,
     pub source: Source,
+    /// The direct stream URL (kept so playback can be reloaded).
+    url: String,
     position: f64,
     duration: f64,
     paused: bool,
@@ -57,7 +59,14 @@ pub struct PlayerCtl {
     error: Option<String>,
     subtitles: Vec<joshflix_core::subtitles::Subtitle>,
     subtitles_added: bool,
+    /// Pick the subtitle track once the track list (incl. added subs) is known.
+    subtitle_choice_pending: bool,
     subtitles_on: bool,
+    /// When the file loaded, to detect a stalled zero-copy decoder.
+    loaded_at: Option<Instant>,
+    /// mpv reported PLAYBACK_RESTART (the first frame is up) for this file.
+    started: bool,
+    hwdec_fallback: bool,
     /// Last overlay visibility pushed to mpv (to lift subtitles above the controls).
     overlay_shown: Option<bool>,
     night: bool,
@@ -94,6 +103,7 @@ impl Controller {
         self.player = Some(PlayerCtl {
             request: request.clone(),
             source,
+            url: url.clone(),
             position: request.resume_at.unwrap_or(0.0),
             duration: 0.0,
             paused: false,
@@ -111,7 +121,11 @@ impl Controller {
             error: None,
             subtitles: Vec::new(),
             subtitles_added: false,
+            subtitle_choice_pending: false,
             subtitles_on: false,
+            loaded_at: None,
+            started: false,
+            hwdec_fallback: false,
             overlay_shown: None,
             night,
         });
@@ -178,10 +192,10 @@ impl Controller {
 
     pub fn on_player_event(&mut self, event: PlayerEvent) {
         if let PlayerEvent::Log { level, text } = &event {
-            if level == "error" || level == "fatal" {
-                tracing::error!("mpv: {text}");
-            } else {
-                tracing::warn!("mpv: {text}");
+            match level.as_str() {
+                "error" | "fatal" => tracing::error!("mpv: {text}"),
+                "warn" => tracing::warn!("mpv: {text}"),
+                _ => tracing::info!("mpv[{level}]: {text}"),
             }
             return;
         }
@@ -189,11 +203,14 @@ impl Controller {
         match event {
             PlayerEvent::FileLoaded => {
                 p.video_shown = true;
+                p.subtitle_choice_pending = true;
+                p.loaded_at = Some(Instant::now());
                 self.set_screen(Screen::Player);
                 self.add_subtitles();
             }
             PlayerEvent::Started => {
                 p.buffering = None;
+                p.started = true;
             }
             PlayerEvent::Position(pos) => p.position = pos,
             PlayerEvent::Duration(d) => p.duration = d,
@@ -208,7 +225,10 @@ impl Controller {
                 }
             }
             PlayerEvent::Buffering(state) => p.buffering = state,
-            PlayerEvent::TracksChanged => self.refresh_subtitle_state(),
+            PlayerEvent::TracksChanged => {
+                self.choose_subtitle();
+                self.refresh_subtitle_state();
+            }
             PlayerEvent::FrameRate(fps) => {
                 if self.settings.frame_rate_matching && fps > 1.0 {
                     self.platform.set_frame_rate(fps);
@@ -236,6 +256,8 @@ impl Controller {
             return;
         }
         p.subtitles_added = true;
+        // Re-evaluate the choice once these arrive (they can land after the file loaded).
+        p.subtitle_choice_pending = true;
         let Some(player) = self.video.player() else { return };
         let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for sub in &p.subtitles {
@@ -243,24 +265,44 @@ impl Controller {
             *n += 1;
             let _ = player.add_subtitle(&sub.url, &format!("OpenSubtitles {n}"), &sub.lang);
         }
-        // add-subtitle selects the last one added; restore the user's choice.
+        // The choice happens in `choose_subtitle` once mpv reports the new tracks.
+    }
+
+    /// Apply the subtitle preference once the track list includes the subtitles we added.
+    fn choose_subtitle(&mut self) {
+        let Some(p) = self.player.as_mut() else { return };
+        if !p.subtitle_choice_pending {
+            return;
+        }
+        let Some(player) = self.video.player() else { return };
+        let tracks = player.tracks();
+        if tracks.is_empty() {
+            return;
+        }
+        let expected = if p.subtitles_added { p.subtitles.len() } else { 0 };
+        let external = tracks.iter().filter(|t| t.kind == TrackKind::Subtitle && t.external).count();
+        if external < expected {
+            return; // more OpenSubtitles tracks still loading
+        }
+        p.subtitle_choice_pending = false;
         let wanted = self.settings.subtitles_enabled;
         let preferred = self.settings.subtitle_languages.first().cloned().unwrap_or_default();
-        let tracks = player.tracks();
-        let choice = wanted.then(|| {
-            let matches = |t: &&joshflix_player::Track| {
-                t.kind == TrackKind::Subtitle
-                    && t.lang.as_deref().is_some_and(|l| joshflix_player::language_label(l) == joshflix_core::subtitles::language_name(&preferred))
-            };
+        let matches = |t: &&joshflix_player::Track| {
+            t.kind == TrackKind::Subtitle
+                && t.lang.as_deref().is_some_and(|l| joshflix_player::language_label(l) == joshflix_core::subtitles::language_name(&preferred))
+        };
+        let choice = if wanted {
             tracks
                 .iter()
                 .filter(matches)
                 .find(|t| !t.external && !t.forced)
                 .or_else(|| tracks.iter().filter(matches).next())
                 .map(|t| t.id)
-        });
-        let _ = player.select_track(TrackKind::Subtitle, choice.flatten());
-        self.refresh_subtitle_state();
+        } else {
+            // Off, but keep forced subtitles (foreign-language lines) in the preferred language.
+            tracks.iter().filter(matches).find(|t| t.forced).map(|t| t.id)
+        };
+        let _ = player.select_track(TrackKind::Subtitle, choice);
     }
 
     /// Whether a subtitle track is showing (cheap enough to call on track changes only).
@@ -268,8 +310,7 @@ impl Controller {
         let on = self
             .video
             .player()
-            .and_then(|pl| pl.get_string("sid"))
-            .is_some_and(|sid| sid.parse::<i64>().is_ok());
+            .is_some_and(|pl| pl.tracks().iter().any(|t| t.kind == TrackKind::Subtitle && t.selected));
         if let Some(p) = self.player.as_mut() {
             p.subtitles_on = on;
         }
@@ -340,6 +381,20 @@ impl Controller {
 
     pub(super) fn player_tick(&mut self) {
         let Some(p) = self.player.as_mut() else { return };
+        // Some TV/emulator drivers accept MediaCodec's zero-copy output but never
+        // deliver frames. If nothing has played 6 s after loading, switch to the
+        // copy-back path, which works everywhere (mpv reinitializes the decoder).
+        if cfg!(target_os = "android")
+            && !p.hwdec_fallback
+            && !p.paused
+            && !p.started
+            && p.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(8))
+        {
+            p.hwdec_fallback = true;
+            tracing::warn!("no frames from zero-copy MediaCodec; switching to compatibility mode");
+            self.recover_with_compat_mode();
+            return;
+        }
         // Commit a pending seek once the user pauses on a target.
         if let (Some(target), Some(at)) = (p.seek_target, p.seek_commit_at)
             && Instant::now() >= at
@@ -526,6 +581,33 @@ impl Controller {
         }
     }
 
+    /// The fast decoder path stalled: remember compatibility mode for this TV and
+    /// continue on a fresh mpv instance (the stalled one can't be stopped).
+    fn recover_with_compat_mode(&mut self) {
+        let Some(p) = self.player.take() else { return };
+        self.save_settings(|s| s.video_compat_mode = Some(true));
+        match crate::video::VideoHost::create_player(true) {
+            Ok(player) => {
+                self.video.replace_player(player);
+                let mut request = p.request.clone();
+                request.resume_at = Some(p.position.max(p.request.resume_at.unwrap_or(0.0)));
+                self.toast("Switched to compatibility video mode for this TV");
+                self.start_playback(request, p.source, p.url);
+            }
+            Err(e) => self.toast(&format!("The video player couldn't restart: {e}")),
+        }
+    }
+
+    /// Pause and save when the app leaves the screen.
+    pub fn pause_for_background(&mut self) {
+        if self.player.is_some() {
+            if let Some(player) = self.video.player() {
+                let _ = player.set_paused(true);
+            }
+            self.save_progress(false);
+        }
+    }
+
     pub fn player_key(&mut self, key: Key, repeat: bool) -> bool {
         let Some(player) = self.video.player() else {
             self.exit_player();
@@ -536,6 +618,49 @@ impl Controller {
             return true;
         };
         let overlay_was_visible = Instant::now() < p.overlay_until || p.paused;
+
+        // Remote media keys work regardless of focus.
+        match key {
+            Key::PlayPause => {
+                let _ = player.toggle_pause();
+            }
+            Key::Play => {
+                let _ = player.set_paused(false);
+            }
+            Key::Pause => {
+                let _ = player.set_paused(true);
+            }
+            Key::FastForward | Key::Rewind => {
+                let step = if key == Key::FastForward { 30.0 } else { -10.0 };
+                let base = p.seek_target.unwrap_or(p.position);
+                let max = if p.duration > 0.0 { p.duration - 1.0 } else { f64::MAX };
+                p.seek_target = Some((base + step).clamp(0.0, max));
+                p.seek_commit_at = Some(Instant::now() + Duration::from_millis(650));
+                p.zone = 0;
+            }
+            Key::Stop => {
+                self.exit_player();
+                return true;
+            }
+            Key::Next => {
+                if p.next.request.is_some() {
+                    self.play_next();
+                }
+                return true;
+            }
+            Key::Captions => self.open_track_menu(TrackKind::Subtitle),
+            Key::AudioTrack => self.open_track_menu(TrackKind::Audio),
+            _ => {}
+        }
+        if matches!(
+            key,
+            Key::PlayPause | Key::Play | Key::Pause | Key::FastForward | Key::Rewind | Key::Captions | Key::AudioTrack
+        ) {
+            self.show_overlay();
+            self.push_player();
+            return true;
+        }
+        let Some(p) = self.player.as_mut() else { return true };
 
         // Track menu.
         if let Some(menu) = p.menu.as_mut() {

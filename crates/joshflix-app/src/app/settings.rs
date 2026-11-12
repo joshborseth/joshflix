@@ -35,6 +35,7 @@ enum Action {
     AutoplayNext,
     FrameRate,
     NightMode,
+    VideoDecoding,
     SubtitlesOn,
     SubtitleLanguage,
     SubtitleSize,
@@ -148,6 +149,16 @@ impl Controller {
                 Item::toggle("Autoplay next episode", s.autoplay_next, "Counts down 10 seconds in the last minute", Action::AutoplayNext),
                 Item::toggle("Match frame rate", s.frame_rate_matching, "Switches the TV to the video's frame rate (24p…) when supported", Action::FrameRate),
                 Item::toggle("Night mode by default", s.night_mode, "Quieter loud scenes, clearer dialogue. Toggle anytime in the player", Action::NightMode),
+                Item::choice(
+                    "Video decoding",
+                    match s.video_compat_mode {
+                        None => "Automatic",
+                        Some(false) => "Hardware",
+                        Some(true) => "Compatibility",
+                    },
+                    "Compatibility mode helps TVs that show a black screen. Applies after restarting Joshflix",
+                    Action::VideoDecoding,
+                ),
             ],
             2 => {
                 let lang = s.subtitle_languages.first().map(|c| joshflix_core::subtitles::language_name(c)).unwrap_or("English");
@@ -281,6 +292,10 @@ impl Controller {
             Action::AutoplayNext => self.save_settings(|s| s.autoplay_next = !s.autoplay_next),
             Action::FrameRate => self.save_settings(|s| s.frame_rate_matching = !s.frame_rate_matching),
             Action::NightMode => self.save_settings(|s| s.night_mode = !s.night_mode),
+            Action::VideoDecoding => {
+                let next = cycle(&[None, Some(false), Some(true)], self.settings.video_compat_mode, step);
+                self.save_settings(|s| s.video_compat_mode = next);
+            }
             Action::SubtitlesOn => self.save_settings(|s| s.subtitles_enabled = !s.subtitles_enabled),
             Action::HideJunk => self.save_settings(|s| s.filters.hide_junk = !s.filters.hide_junk),
             Action::MatchDisplay => self.save_settings(|s| s.filters.match_display = !s.filters.match_display),

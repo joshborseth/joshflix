@@ -45,6 +45,9 @@ pub struct Settings {
     pub night_mode: bool,
     pub frame_rate_matching: bool,
     pub autoplay_next: bool,
+    /// Decode with MediaCodec copy-back instead of zero-copy (for TVs whose
+    /// drivers stall on the fast path). `None` = automatic.
+    pub video_compat_mode: Option<bool>,
     /// Last update version the user dismissed.
     pub dismissed_update_code: Option<u64>,
 }
@@ -63,6 +66,7 @@ impl Default for Settings {
             night_mode: false,
             frame_rate_matching: true,
             autoplay_next: true,
+            video_compat_mode: None,
             dismissed_update_code: None,
         }
     }

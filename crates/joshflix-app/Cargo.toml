@@ -28,7 +28,12 @@ slint = { workspace = true, features = ["backend-winit"] }
 tracing-subscriber.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
-slint = { workspace = true, features = ["backend-android-activity-06"] }
+# Our own platform (src/android_platform.rs) instead of Slint's Skia-based backend.
+i-slint-renderer-femtovg = { version = "=1.18.1", features = ["opengl"] }
+android-activity = { version = "0.6.1", features = ["native-activity"] }
+ndk = { version = "0.9", default-features = false }
+glutin = { version = "0.32", default-features = false, features = ["egl"] }
+raw-window-handle = "0.6"
 tracing = { workspace = true, features = ["log"] }
 log = "0.4"
 android_logger = "0.15.1"

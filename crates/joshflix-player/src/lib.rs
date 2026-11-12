@@ -1,6 +1,7 @@
 //! libmpv playback for Joshflix.
 //!
-//! [`Player`] owns an mpv instance and an event thread. [`VideoRenderer`] draws
+//! [`Player`] owns an mpv instance, an event thread and a control thread that
+//! runs every blocking mpv call, so callers (the UI thread) never wait on mpv. [`VideoRenderer`] draws
 //! mpv's frames into the UI's OpenGL context (call it from the UI toolkit's
 //! "before rendering" hook), so the player overlay is ordinary UI drawn on top.
 //! On Android, mpv decodes with MediaCodec and hands frames to OpenGL through
@@ -49,7 +50,9 @@ impl PlayerConfig {
     pub fn for_platform() -> Self {
         let android = cfg!(target_os = "android");
         Self {
-            hwdec: if android { "mediacodec,mediacodec-copy".into() } else { "auto-safe".into() },
+            hwdec: std::env::var("JOSHFLIX_HWDEC").unwrap_or_else(|_| {
+                if android { "mediacodec,mediacodec-copy".into() } else { "auto-safe".into() }
+            }),
             audio_output: android.then(|| "audiotrack,opensles".into()),
             cache_mib: if android { 96 } else { 256 },
             user_agent: concat!("Joshflix/", env!("CARGO_PKG_VERSION")).into(),
@@ -148,6 +151,7 @@ const OBS_FPS: u64 = 7;
 const OBS_WIDTH: u64 = 8;
 const OBS_HEIGHT: u64 = 9;
 const OBS_EOF: u64 = 10;
+const OBS_SELECTION: u64 = 11;
 
 struct Inner {
     mpv: Mpv,
@@ -167,35 +171,173 @@ impl Drop for Inner {
     }
 }
 
+/// Work for the control thread. Every mpv call that can block runs there, so
+/// the UI/render thread never waits on mpv's core (which can itself be waiting
+/// for the render thread to consume MediaCodec frames).
+enum Cmd {
+    Command(Vec<String>),
+    SetString(String, String),
+    SetFlag(String, bool),
+    RefreshTracks,
+    Quit,
+}
+
+type EventFn = Arc<dyn Fn(PlayerEvent) + Send + Sync>;
+
 /// The mpv instance. Cloning shares it.
 #[derive(Clone)]
 pub struct Player {
     inner: Arc<Inner>,
-    events: Arc<std::sync::Mutex<Option<JoinHandle<()>>>>,
+    commands: std::sync::mpsc::Sender<Cmd>,
+    tracks: Arc<std::sync::Mutex<Vec<Track>>>,
+    threads: Arc<std::sync::Mutex<Vec<JoinHandle<()>>>>,
 }
 
 fn cstring(value: &str) -> CString {
     CString::new(value.replace('\0', "")).unwrap_or_default()
 }
 
+impl Inner {
+    fn check(&self, call: &'static str, code: c_int) -> Result<()> {
+        if code < 0 {
+            Err(PlayerError::Mpv { call, message: self.mpv.error_string(code) })
+        } else {
+            Ok(())
+        }
+    }
+
+    fn set_option(&self, name: &str, value: &str) {
+        let (n, v) = (cstring(name), cstring(value));
+        // SAFETY: valid handle and strings.
+        let code = unsafe { (self.mpv.mpv_set_option_string)(self.handle, n.as_ptr(), v.as_ptr()) };
+        if code < 0 {
+            tracing::warn!("mpv option {name}={value}: {}", self.mpv.error_string(code));
+        }
+    }
+
+    fn command(&self, args: &[String]) -> Result<()> {
+        let owned: Vec<CString> = args.iter().map(|a| cstring(a)).collect();
+        let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
+        ptrs.push(ptr::null());
+        // SAFETY: NULL-terminated array of valid C strings that outlive the call.
+        let code = unsafe { (self.mpv.mpv_command)(self.handle, ptrs.as_mut_ptr()) };
+        self.check("mpv_command", code)
+    }
+
+    fn set_string(&self, name: &str, value: &str) -> Result<()> {
+        let (n, v) = (cstring(name), cstring(value));
+        // SAFETY: valid handle and strings.
+        let code = unsafe { (self.mpv.mpv_set_property_string)(self.handle, n.as_ptr(), v.as_ptr()) };
+        self.check("mpv_set_property_string", code)
+    }
+
+    fn set_flag(&self, name: &str, value: bool) -> Result<()> {
+        let n = cstring(name);
+        let mut flag: c_int = value.into();
+        // SAFETY: MPV_FORMAT_FLAG takes a pointer to int.
+        let code = unsafe { (self.mpv.mpv_set_property)(self.handle, n.as_ptr(), MPV_FORMAT_FLAG, (&raw mut flag).cast()) };
+        self.check("mpv_set_property", code)
+    }
+
+    fn get_string(&self, name: &str) -> Option<String> {
+        let n = cstring(name);
+        // SAFETY: valid handle; result freed with mpv_free.
+        unsafe {
+            let raw = (self.mpv.mpv_get_property_string)(self.handle, n.as_ptr());
+            if raw.is_null() {
+                return None;
+            }
+            let value = CStr::from_ptr(raw).to_string_lossy().into_owned();
+            (self.mpv.mpv_free)(raw.cast());
+            Some(value)
+        }
+    }
+
+    fn get_i64(&self, name: &str) -> Option<i64> {
+        let n = cstring(name);
+        let mut value = 0i64;
+        // SAFETY: MPV_FORMAT_INT64 writes an i64.
+        let code = unsafe { (self.mpv.mpv_get_property)(self.handle, n.as_ptr(), MPV_FORMAT_INT64, (&raw mut value).cast()) };
+        (code >= 0).then_some(value)
+    }
+
+    fn get_bool(&self, name: &str) -> Option<bool> {
+        let n = cstring(name);
+        let mut value: c_int = 0;
+        // SAFETY: MPV_FORMAT_FLAG writes an int.
+        let code = unsafe { (self.mpv.mpv_get_property)(self.handle, n.as_ptr(), MPV_FORMAT_FLAG, (&raw mut value).cast()) };
+        (code >= 0).then_some(value != 0)
+    }
+
+    fn read_tracks(&self) -> Vec<Track> {
+        let count = self.get_i64("track-list/count").unwrap_or(0);
+        (0..count)
+            .filter_map(|i| {
+                let p = |field: &str| format!("track-list/{i}/{field}");
+                let kind = match self.get_string(&p("type"))?.as_str() {
+                    "video" => TrackKind::Video,
+                    "audio" => TrackKind::Audio,
+                    "sub" => TrackKind::Subtitle,
+                    _ => return None,
+                };
+                Some(Track {
+                    id: self.get_i64(&p("id"))?,
+                    kind,
+                    title: self.get_string(&p("title")).filter(|t| !t.is_empty()),
+                    lang: self.get_string(&p("lang")).filter(|t| !t.is_empty()),
+                    codec: self.get_string(&p("codec")).filter(|t| !t.is_empty()),
+                    channels: self.get_i64(&p("demux-channel-count")).map(|n| match n {
+                        1 => "1.0".to_owned(),
+                        2 => "2.0".to_owned(),
+                        6 => "5.1".to_owned(),
+                        8 => "7.1".to_owned(),
+                        n => format!("{n}ch"),
+                    }),
+                    selected: self.get_bool(&p("selected")).unwrap_or(false),
+                    external: self.get_bool(&p("external")).unwrap_or(false),
+                    default: self.get_bool(&p("default")).unwrap_or(false),
+                    forced: self.get_bool(&p("forced")).unwrap_or(false),
+                })
+            })
+            .collect()
+    }
+}
+
+fn control_loop(inner: &Inner, rx: std::sync::mpsc::Receiver<Cmd>, tracks: &std::sync::Mutex<Vec<Track>>, on_event: &EventFn) {
+    while let Ok(cmd) = rx.recv() {
+        let result = match cmd {
+            Cmd::Command(args) => inner.command(&args),
+            Cmd::SetString(name, value) => inner.set_string(&name, &value),
+            Cmd::SetFlag(name, value) => inner.set_flag(&name, value),
+            Cmd::RefreshTracks => {
+                let fresh = inner.read_tracks();
+                if let Ok(mut slot) = tracks.lock() {
+                    *slot = fresh;
+                }
+                on_event(PlayerEvent::TracksChanged);
+                Ok(())
+            }
+            Cmd::Quit => {
+                let _ = inner.command(&["quit".to_owned()]);
+                return;
+            }
+        };
+        if let Err(e) = result {
+            tracing::warn!("{e}");
+        }
+    }
+}
+
 impl Player {
-    /// Create and initialize mpv. `on_event` runs on the player's event thread.
-    pub fn new(config: &PlayerConfig, on_event: impl Fn(PlayerEvent) + Send + 'static) -> Result<Self> {
+    /// Create and initialize mpv. `on_event` runs on mpv's event or control thread.
+    pub fn new(config: &PlayerConfig, on_event: impl Fn(PlayerEvent) + Send + Sync + 'static) -> Result<Self> {
         let mpv = Mpv::load().map_err(PlayerError::Unavailable)?;
         // SAFETY: plain constructor.
         let handle = unsafe { (mpv.mpv_create)() };
         if handle.is_null() {
             return Err(PlayerError::Unavailable("mpv_create failed".into()));
         }
-        let inner = Arc::new(Inner {
-            mpv,
-            handle,
-            shutting_down: AtomicBool::new(false),
-        });
-        let player = Self {
-            inner,
-            events: Arc::default(),
-        };
+        let inner = Arc::new(Inner { mpv, handle, shutting_down: AtomicBool::new(false) });
 
         let cache = format!("{}MiB", config.cache_mib);
         let back_cache = format!("{}MiB", config.cache_mib / 3);
@@ -236,12 +378,12 @@ impl Player {
             options.push(("ao", ao));
         }
         for (name, value) in options {
-            player.set_option(name, value)?;
+            inner.set_option(name, value);
         }
 
         // SAFETY: handle is valid; initialize once.
-        let code = unsafe { (player.inner.mpv.mpv_initialize)(player.inner.handle) };
-        player.check("mpv_initialize", code)?;
+        let code = unsafe { (inner.mpv.mpv_initialize)(inner.handle) };
+        inner.check("mpv_initialize", code)?;
 
         let observe = [
             (OBS_TIME, "time-pos", MPV_FORMAT_DOUBLE),
@@ -254,117 +396,67 @@ impl Player {
             (OBS_WIDTH, "video-params/w", MPV_FORMAT_INT64),
             (OBS_HEIGHT, "video-params/h", MPV_FORMAT_INT64),
             (OBS_EOF, "eof-reached", MPV_FORMAT_FLAG),
+            (OBS_SELECTION, "sid", MPV_FORMAT_NONE),
+            (OBS_SELECTION, "aid", MPV_FORMAT_NONE),
         ];
         for (id, name, format) in observe {
             let name = cstring(name);
             // SAFETY: valid handle and NUL-terminated name.
-            unsafe { (player.inner.mpv.mpv_observe_property)(player.inner.handle, id, name.as_ptr(), format) };
+            unsafe { (inner.mpv.mpv_observe_property)(inner.handle, id, name.as_ptr(), format) };
         }
-        let level = cstring("warn");
+        // JOSHFLIX_MPV_LOG=v (or debug) for diagnosing playback on devices.
+        let level = cstring(&std::env::var("JOSHFLIX_MPV_LOG").unwrap_or_else(|_| "warn".into()));
         // SAFETY: valid handle.
-        unsafe { (player.inner.mpv.mpv_request_log_messages)(player.inner.handle, level.as_ptr()) };
+        unsafe { (inner.mpv.mpv_request_log_messages)(inner.handle, level.as_ptr()) };
 
-        let inner = player.inner.clone();
-        let thread = std::thread::Builder::new()
-            .name("mpv-events".into())
-            .spawn(move || event_loop(&inner, on_event))
-            .map_err(|e| PlayerError::Unavailable(e.to_string()))?;
-        if let Ok(mut slot) = player.events.lock() {
-            *slot = Some(thread);
+        let on_event: EventFn = Arc::new(on_event);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let tracks: Arc<std::sync::Mutex<Vec<Track>>> = Arc::default();
+        let mut threads = Vec::new();
+        {
+            let (inner, tracks, on_event) = (inner.clone(), tracks.clone(), on_event.clone());
+            threads.push(
+                std::thread::Builder::new()
+                    .name("mpv-control".into())
+                    .spawn(move || control_loop(&inner, rx, &tracks, &on_event))
+                    .map_err(|e| PlayerError::Unavailable(e.to_string()))?,
+            );
         }
-        Ok(player)
+        {
+            let (inner, tx, on_event) = (inner.clone(), tx.clone(), on_event);
+            threads.push(
+                std::thread::Builder::new()
+                    .name("mpv-events".into())
+                    .spawn(move || event_loop(&inner, &tx, &*on_event))
+                    .map_err(|e| PlayerError::Unavailable(e.to_string()))?,
+            );
+        }
+        Ok(Self {
+            inner,
+            commands: tx,
+            tracks,
+            threads: Arc::new(std::sync::Mutex::new(threads)),
+        })
     }
 
-    fn check(&self, call: &'static str, code: c_int) -> Result<()> {
-        if code < 0 {
-            Err(PlayerError::Mpv {
-                call,
-                message: self.inner.mpv.error_string(code),
-            })
-        } else {
-            Ok(())
-        }
+    fn send(&self, cmd: Cmd) -> Result<()> {
+        self.commands
+            .send(cmd)
+            .map_err(|_| PlayerError::Unavailable("the player has shut down".into()))
     }
 
-    fn set_option(&self, name: &str, value: &str) -> Result<()> {
-        let (n, v) = (cstring(name), cstring(value));
-        // SAFETY: valid handle and strings.
-        let code = unsafe { (self.inner.mpv.mpv_set_option_string)(self.inner.handle, n.as_ptr(), v.as_ptr()) };
-        if code < 0 {
-            tracing::warn!("mpv option {name}={value}: {}", self.inner.mpv.error_string(code));
-        }
-        Ok(())
-    }
-
-    /// Run an mpv command (e.g. `["loadfile", url]`).
+    /// Queue an mpv command (e.g. `["loadfile", url]`). Never blocks.
     pub fn command(&self, args: &[&str]) -> Result<()> {
-        let owned: Vec<CString> = args.iter().map(|a| cstring(a)).collect();
-        let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
-        ptrs.push(ptr::null());
-        // SAFETY: NULL-terminated array of valid C strings that outlive the call.
-        let code = unsafe { (self.inner.mpv.mpv_command)(self.inner.handle, ptrs.as_mut_ptr()) };
-        self.check("mpv_command", code)
+        self.send(Cmd::Command(args.iter().map(|a| (*a).to_owned()).collect()))
     }
 
+    /// Queue a property change. Never blocks.
     pub fn set_property(&self, name: &str, value: &str) -> Result<()> {
-        let (n, v) = (cstring(name), cstring(value));
-        // SAFETY: valid handle and strings.
-        let code = unsafe { (self.inner.mpv.mpv_set_property_string)(self.inner.handle, n.as_ptr(), v.as_ptr()) };
-        self.check("mpv_set_property_string", code)
+        self.send(Cmd::SetString(name.to_owned(), value.to_owned()))
     }
 
     pub fn set_flag(&self, name: &str, value: bool) -> Result<()> {
-        let n = cstring(name);
-        let mut flag: c_int = value.into();
-        // SAFETY: MPV_FORMAT_FLAG takes a pointer to int.
-        let code = unsafe {
-            (self.inner.mpv.mpv_set_property)(self.inner.handle, n.as_ptr(), MPV_FORMAT_FLAG, (&raw mut flag).cast())
-        };
-        self.check("mpv_set_property", code)
-    }
-
-    pub fn get_string(&self, name: &str) -> Option<String> {
-        let n = cstring(name);
-        // SAFETY: valid handle; result freed with mpv_free.
-        unsafe {
-            let raw = (self.inner.mpv.mpv_get_property_string)(self.inner.handle, n.as_ptr());
-            if raw.is_null() {
-                return None;
-            }
-            let value = CStr::from_ptr(raw).to_string_lossy().into_owned();
-            (self.inner.mpv.mpv_free)(raw.cast());
-            Some(value)
-        }
-    }
-
-    pub fn get_f64(&self, name: &str) -> Option<f64> {
-        let n = cstring(name);
-        let mut value = 0f64;
-        // SAFETY: MPV_FORMAT_DOUBLE writes an f64.
-        let code = unsafe {
-            (self.inner.mpv.mpv_get_property)(self.inner.handle, n.as_ptr(), MPV_FORMAT_DOUBLE, (&raw mut value).cast())
-        };
-        (code >= 0).then_some(value)
-    }
-
-    fn get_i64(&self, name: &str) -> Option<i64> {
-        let n = cstring(name);
-        let mut value = 0i64;
-        // SAFETY: MPV_FORMAT_INT64 writes an i64.
-        let code = unsafe {
-            (self.inner.mpv.mpv_get_property)(self.inner.handle, n.as_ptr(), MPV_FORMAT_INT64, (&raw mut value).cast())
-        };
-        (code >= 0).then_some(value)
-    }
-
-    fn get_bool(&self, name: &str) -> Option<bool> {
-        let n = cstring(name);
-        let mut value: c_int = 0;
-        // SAFETY: MPV_FORMAT_FLAG writes an int.
-        let code = unsafe {
-            (self.inner.mpv.mpv_get_property)(self.inner.handle, n.as_ptr(), MPV_FORMAT_FLAG, (&raw mut value).cast())
-        };
-        (code >= 0).then_some(value != 0)
+        self.send(Cmd::SetFlag(name.to_owned(), value))
     }
 
     // ---- high-level controls ----
@@ -372,6 +464,9 @@ impl Player {
     /// Load a URL, optionally starting at `start_secs`.
     pub fn load(&self, url: &str, start_secs: Option<f64>) -> Result<()> {
         let start = start_secs.filter(|s| *s > 1.0).map_or_else(|| "0".to_owned(), |s| format!("{s:.1}"));
+        if let Ok(mut tracks) = self.tracks.lock() {
+            tracks.clear();
+        }
         self.set_property("start", &start)?;
         self.set_flag("pause", false)?;
         self.command(&["loadfile", url, "replace"])
@@ -395,14 +490,6 @@ impl Player {
 
     pub fn seek_by(&self, secs: f64) -> Result<()> {
         self.command(&["seek", &format!("{secs:.2}"), "relative"])
-    }
-
-    pub fn position(&self) -> Option<f64> {
-        self.get_f64("time-pos")
-    }
-
-    pub fn duration(&self) -> Option<f64> {
-        self.get_f64("duration")
     }
 
     /// `None` disables the track type (subtitles off).
@@ -434,59 +521,28 @@ impl Player {
         self.set_property("af", filter)
     }
 
-    /// Audio and subtitle tracks of the current file.
+    /// The current file's tracks, as of the last change mpv reported. Never blocks.
     pub fn tracks(&self) -> Vec<Track> {
-        let count = self.get_i64("track-list/count").unwrap_or(0);
-        (0..count)
-            .filter_map(|i| {
-                let p = |field: &str| format!("track-list/{i}/{field}");
-                let kind = match self.get_string(&p("type"))?.as_str() {
-                    "video" => TrackKind::Video,
-                    "audio" => TrackKind::Audio,
-                    "sub" => TrackKind::Subtitle,
-                    _ => return None,
-                };
-                Some(Track {
-                    id: self.get_i64(&p("id"))?,
-                    kind,
-                    title: self.get_string(&p("title")).filter(|t| !t.is_empty()),
-                    lang: self.get_string(&p("lang")).filter(|t| !t.is_empty()),
-                    codec: self.get_string(&p("codec")).filter(|t| !t.is_empty()),
-                    channels: self
-                        .get_i64(&p("demux-channel-count"))
-                        .map(|n| match n {
-                            1 => "1.0".to_owned(),
-                            2 => "2.0".to_owned(),
-                            6 => "5.1".to_owned(),
-                            8 => "7.1".to_owned(),
-                            n => format!("{n}ch"),
-                        }),
-                    selected: self.get_bool(&p("selected")).unwrap_or(false),
-                    external: self.get_bool(&p("external")).unwrap_or(false),
-                    default: self.get_bool(&p("default")).unwrap_or(false),
-                    forced: self.get_bool(&p("forced")).unwrap_or(false),
-                })
-            })
-            .collect()
+        self.tracks.lock().map(|t| t.clone()).unwrap_or_default()
     }
 
-    /// Stop the event thread and destroy mpv once the last clone drops.
+    /// Stop the threads and destroy mpv once the last clone drops.
     pub fn shutdown(&self) {
         if self.inner.shutting_down.swap(true, Ordering::SeqCst) {
             return;
         }
-        let _ = self.command(&["quit"]);
-        // SAFETY: wakes mpv_wait_event so the thread can exit.
+        let _ = self.send(Cmd::Quit);
+        // SAFETY: wakes mpv_wait_event so the event thread can exit.
         unsafe { (self.inner.mpv.mpv_wakeup)(self.inner.handle) };
-        if let Ok(mut slot) = self.events.lock()
-            && let Some(thread) = slot.take()
-        {
-            let _ = thread.join();
+        if let Ok(mut threads) = self.threads.lock() {
+            for thread in threads.drain(..) {
+                let _ = thread.join();
+            }
         }
     }
 }
 
-fn event_loop(inner: &Inner, on_event: impl Fn(PlayerEvent)) {
+fn event_loop(inner: &Inner, control: &std::sync::mpsc::Sender<Cmd>, on_event: &(dyn Fn(PlayerEvent) + Send + Sync)) {
     loop {
         // SAFETY: valid handle; the returned event is valid until the next call.
         let event = unsafe { &*(inner.mpv.mpv_wait_event)(inner.handle, 1.0) };
@@ -519,6 +575,11 @@ fn event_loop(inner: &Inner, on_event: impl Fn(PlayerEvent)) {
             MPV_EVENT_PROPERTY_CHANGE => {
                 // SAFETY: PROPERTY_CHANGE carries mpv_event_property.
                 let prop = unsafe { &*(event.data as *const mpv_event_property) };
+                // Track list or selection changed: re-read tracks off this thread.
+                if event.reply_userdata == OBS_TRACK_COUNT || event.reply_userdata == OBS_SELECTION {
+                    let _ = control.send(Cmd::RefreshTracks);
+                    continue;
+                }
                 if prop.data.is_null() {
                     continue;
                 }
@@ -538,7 +599,6 @@ fn event_loop(inner: &Inner, on_event: impl Fn(PlayerEvent)) {
                     (OBS_PAUSED_FOR_CACHE, _, _, Some(true)) => PlayerEvent::Buffering(Some(0)),
                     (OBS_PAUSED_FOR_CACHE, _, _, Some(false)) => PlayerEvent::Buffering(None),
                     (OBS_CACHE_STATE, _, Some(v), _) if v < 100 => PlayerEvent::Buffering(Some(v)),
-                    (OBS_TRACK_COUNT, _, Some(_), _) => PlayerEvent::TracksChanged,
                     (OBS_FPS, Some(v), _, _) => PlayerEvent::FrameRate(v),
                     (OBS_WIDTH, _, Some(w), _) => PlayerEvent::VideoSize { width: w, height: 0 },
                     (OBS_HEIGHT, _, Some(h), _) => PlayerEvent::VideoSize { width: 0, height: h },
@@ -589,11 +649,13 @@ impl VideoRenderer {
             get_proc_address_ctx: (&raw const lookup) as *mut c_void,
         };
         let api = cstring("opengl");
-        let mut advanced: c_int = 1;
+        // No MPV_RENDER_PARAM_ADVANCED_CONTROL: with it, mpv's core may block on
+        // the render thread, and our render thread is the UI thread, which also
+        // makes synchronous mpv calls (deadlock with MediaCodec on Android).
+        // Without it mpv preloads its hwdec interop here instead.
         let mut params = [
             mpv_render_param { type_: MPV_RENDER_PARAM_API_TYPE, data: api.as_ptr() as *mut c_void },
             mpv_render_param { type_: MPV_RENDER_PARAM_OPENGL_INIT_PARAMS, data: (&raw mut init).cast() },
-            mpv_render_param { type_: MPV_RENDER_PARAM_ADVANCED_CONTROL, data: (&raw mut advanced).cast() },
             mpv_render_param { type_: MPV_RENDER_PARAM_INVALID, data: ptr::null_mut() },
         ];
         let mut ctx: *mut mpv_render_context = ptr::null_mut();
@@ -601,7 +663,7 @@ impl VideoRenderer {
         let code = unsafe {
             (player.inner.mpv.mpv_render_context_create)(&raw mut ctx, player.inner.handle, params.as_mut_ptr())
         };
-        player.check("mpv_render_context_create", code)?;
+        player.inner.check("mpv_render_context_create", code)?;
         let update_cb = Box::into_raw(Box::new(on_new_frame));
         // SAFETY: ctx is valid; update_cb lives until Drop, where the callback is cleared first.
         unsafe {

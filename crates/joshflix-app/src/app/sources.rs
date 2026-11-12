@@ -43,8 +43,7 @@ pub struct ResolveCtl {
 impl Controller {
     pub(super) fn comet(&self) -> Option<Comet> {
         let key = self.rd_key()?;
-        // Desktop development can point at a mock Comet.
-        #[cfg(not(target_os = "android"))]
+        // Development can point at a mock Comet.
         if let Ok(base) = std::env::var("JOSHFLIX_COMET_URL") {
             return Some(Comet::with_base(self.svc.http.clone(), base, &key));
         }

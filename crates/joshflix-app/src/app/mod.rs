@@ -19,8 +19,7 @@ mod sources;
 use std::cell::RefCell;
 use std::future::Future;
 use std::rc::Rc;
-use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use joshflix_core::cinemeta::{Cinemeta, MetaPreview};
 use joshflix_core::http::Http;
@@ -31,12 +30,12 @@ use joshflix_core::store::{Settings, Store};
 use joshflix_core::subtitles::OpenSubtitles;
 use joshflix_core::update::Updater;
 use joshflix_core::{MediaKind, VideoRef};
-use slint::{ComponentHandle, Global, Model, ModelRc, SharedString, VecModel};
+use slint::{ComponentHandle, Global, ModelRc, SharedString, VecModel};
 
 use crate::platform::Platform;
 use crate::video::VideoHost;
 use crate::{
-    AppState, AppWindow, BrowseState, Icons, NavItem, Poster, RailState, Screen,
+    AppState, AppWindow, Icons, NavItem, Poster, RailState, Screen,
 };
 
 pub use browse::BrowseCtl;
@@ -68,6 +67,18 @@ pub enum Key {
     PageUp,
     PageDown,
     Char(char),
+    // Remote media keys (Android only; they bypass Slint).
+    PlayPause,
+    Play,
+    Pause,
+    Stop,
+    FastForward,
+    Rewind,
+    Next,
+    Previous,
+    Captions,
+    AudioTrack,
+    Search,
 }
 
 impl Key {
@@ -88,6 +99,17 @@ impl Key {
             "menu" => Self::Menu,
             "pageup" => Self::PageUp,
             "pagedown" => Self::PageDown,
+            "playpause" => Self::PlayPause,
+            "play" => Self::Play,
+            "pause" => Self::Pause,
+            "stop" => Self::Stop,
+            "fastforward" => Self::FastForward,
+            "rewind" => Self::Rewind,
+            "next" => Self::Next,
+            "previous" => Self::Previous,
+            "captions" => Self::Captions,
+            "audiotrack" => Self::AudioTrack,
+            "search" => Self::Search,
             other => {
                 let c = other.strip_prefix("char:")?.chars().next()?;
                 if c.is_control() || ('\u{f700}'..='\u{f8ff}').contains(&c) {
@@ -270,8 +292,7 @@ impl Controller {
             with_controller(Controller::tick);
         });
 
-        // Desktop development: JOSHFLIX_RD_KEY skips onboarding with a given key.
-        #[cfg(not(target_os = "android"))]
+        // Development: JOSHFLIX_RD_KEY skips onboarding with a given key.
         if let Ok(key) = std::env::var("JOSHFLIX_RD_KEY")
             && !self.settings.has_rd_key()
         {
@@ -434,6 +455,11 @@ impl Controller {
         if self.sources.open {
             return self.sources_key(key);
         }
+        // The remote's Search button jumps to Search from anywhere but the player.
+        if key == Key::Search && self.screen != Screen::Player && self.screen != Screen::Onboarding {
+            self.go_section(Section::Search);
+            return true;
+        }
         match self.screen {
             Screen::Onboarding => self.onboarding_key(key),
             Screen::Player => self.player_key(key, repeat),
@@ -486,6 +512,14 @@ impl Controller {
         true
     }
 
+    /// The activity went to the background (or came back).
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn on_app_visibility(&mut self, visible: bool) {
+        if !visible {
+            self.pause_for_background();
+        }
+    }
+
     fn tick(&mut self) {
         let scale = self.ui.window().scale_factor();
         if (scale - self.images.scale()).abs() > 0.01 {
@@ -496,10 +530,6 @@ impl Controller {
     }
 }
 
-/// Fill a VecModel from a Vec, reusing it.
-pub fn set_model<T: Clone + 'static>(model: &VecModel<T>, items: Vec<T>) {
-    model.set_vec(items);
-}
 
 /// A `Poster` without artwork.
 pub fn poster(id: &str, kind: MediaKind, title: &str, subtitle: &str) -> Poster {
@@ -519,9 +549,6 @@ pub fn shared(s: impl AsRef<str>) -> SharedString {
     SharedString::from(s.as_ref())
 }
 
-pub fn now_instant() -> Instant {
-    Instant::now()
-}
 
 pub fn video_title(name: &str, video: &VideoRef, episode_title: Option<&str>) -> (String, String) {
     match (video.episode_label(), episode_title) {
@@ -531,14 +558,5 @@ pub fn video_title(name: &str, video: &VideoRef, episode_title: Option<&str>) ->
     }
 }
 
-pub fn browse_state(ui: &AppWindow) -> BrowseState<'_> {
-    BrowseState::get(ui)
-}
 
-pub fn model_len<T: Clone + 'static>(model: &ModelRc<T>) -> usize {
-    model.row_count()
-}
 
-pub fn arc<T>(value: T) -> Arc<T> {
-    Arc::new(value)
-}

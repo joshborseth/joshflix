@@ -20,7 +20,6 @@ pub enum ImageKind {
     Backdrop,
     Logo,
     Thumb,
-    Qr,
 }
 
 impl ImageKind {
@@ -32,7 +31,6 @@ impl ImageKind {
             Self::Backdrop => (760.0, 430.0),
             Self::Logo => (320.0, 80.0),
             Self::Thumb => (172.0 * 1.1, 97.0 * 1.1),
-            Self::Qr => (160.0, 160.0),
         }
     }
 }
@@ -91,9 +89,6 @@ impl ImageCache {
         self.scale
     }
 
-    pub fn get(&self, url: &str, kind: ImageKind) -> Option<Image> {
-        self.cache.get(&cache_key(url, kind, self.scale)).cloned()
-    }
 
     /// Ask for an image. Returns it immediately when cached; otherwise the
     /// slot is patched later and the controller is notified.
@@ -141,10 +136,6 @@ impl ImageCache {
         self.cache.insert(key, image);
     }
 
-    /// Insert an already-decoded image (e.g. a QR code).
-    pub fn put(&mut self, url: &str, kind: ImageKind, image: Image) {
-        self.insert(cache_key(url, kind, self.scale), image);
-    }
 
     pub fn prune_later(&self) {
         let loader = self.loader.clone();
