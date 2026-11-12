@@ -15,6 +15,8 @@ A native Android TV app for movies and shows, written entirely in Rust. It takes
 
 ## Features
 
+Screenshots of the first desktop build are in [docs/screenshots](docs/screenshots).
+
 - **Onboarding.** An animated welcome, then the Jedflix-style Real-Debrid step. The TV shows a QR code, your phone opens the relay's page, you paste the key and tap **Send to TV**. You can also type the key with an on-screen keyboard. The key is checked with Real-Debrid before it's saved.
 - **Home, Movies, Shows.** A hero for the focused title (backdrop, logo, rating, description) over rows: Continue Watching, My List, Popular, Top Rated, New this year and genre rows.
 - **Navigation.** A left rail that widens with labels when focused: Search, Home, Movies, Shows, Discover, My List, Settings.
@@ -90,9 +92,14 @@ The first build creates the signing key in `.local/`. **Back it up**: Android on
 
 ## Ship an update
 
-1. Bump `version_code` and `version_name` in `android/version.toml`.
-2. Build the APKs with `cargo xtask apk --abi all`.
-3. Publish them with `cargo xtask publish --notes notes.txt`.
+Release from the main checkout, on `main`, with everything committed.
+
+1. Run `git pull --rebase origin main`: another release may have landed.
+2. Bump `version_code` and `version_name` in `android/version.toml`, and commit.
+3. Build the APKs with `cargo xtask apk --abi all`.
+4. Write the release notes to a file outside the checkout, then publish with `cargo xtask publish --notes ~/.cache/joshflix-notes.txt`.
+
+`publish` refuses to run unless the checkout is on `main`, has no uncommitted or untracked files, is not behind `origin/main`, and the APKs are newer than the last commit. It pushes `main` to GitHub before it updates the relay, then tags the release `v<version_name>` and pushes the tag. So every APK a TV can download is a tagged commit on GitHub.
 
 TVs check the relay from Settings → About, and automatically on launch. They download the APK, verify its SHA-256, and open Android's installer.
 

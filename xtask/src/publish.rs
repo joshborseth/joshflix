@@ -1,5 +1,6 @@
-//! `cargo xtask publish`: copy the release APKs into the relay's data
-//! directory and write `updates/manifest.json`.
+//! `cargo xtask publish`: push `main` to GitHub, copy the release APKs into
+//! the relay's data directory, write `updates/manifest.json`, and tag the
+//! release.
 
 use std::path::{Path, PathBuf};
 
@@ -8,6 +9,7 @@ use joshflix_protocol::{UpdateApk, UpdateManifest};
 
 use crate::apk;
 use crate::device::PACKAGE;
+use crate::git;
 use crate::sdk::{Abi, Sdk};
 use crate::util::{self, command, home_dir};
 use crate::version::Version;
@@ -37,12 +39,18 @@ pub fn publish(notes: Option<&str>) -> Result<()> {
         .filter(|(abi, path)| {
             let present = path.is_file();
             if !present {
-                eprintln!("note: no {abi:?} APK at {}; TVs with that ABI won't see this update", path.display());
+                eprintln!(
+                    "note: no {abi:?} APK at {}; TVs with that ABI won't see this update",
+                    path.display()
+                );
             }
             present
         })
         .collect();
-    ensure!(!apks.is_empty(), "no release APKs in dist/; run `cargo xtask apk` first");
+    ensure!(
+        !apks.is_empty(),
+        "no release APKs in dist/; run `cargo xtask apk` first"
+    );
     for (_, path) in &apks {
         check_badging(&sdk, path, &version)?;
     }
@@ -70,6 +78,10 @@ pub fn publish(notes: Option<&str>) -> Result<()> {
             );
         }
     }
+
+    let apk_paths: Vec<&Path> = apks.iter().map(|(_, path)| path.as_path()).collect();
+    git::check_release(&version.version_name, &apk_paths)?;
+    git::push_main()?;
 
     let mut entries = Vec::new();
     for (abi, path) in &apks {
@@ -99,6 +111,7 @@ pub fn publish(notes: Option<&str>) -> Result<()> {
         version.version_code,
         manifest_path.display()
     );
+    git::push_tag(&version.version_name)?;
     Ok(())
 }
 

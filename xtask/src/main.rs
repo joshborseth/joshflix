@@ -7,6 +7,7 @@
 mod apk;
 mod args;
 mod device;
+mod git;
 mod icons;
 mod libmpv;
 mod publish;
@@ -30,7 +31,7 @@ Commands:
                                Install (building first with --build), launch, and optionally follow logs
   logcat [--serial S]          Follow logcat for the running app's pid
   icons                        Rasterize assets/*.svg into android/res/ and assets/icon-512.png
-  publish [--notes FILE]       Copy the release APKs into the relay's updates/ dir and write manifest.json
+  publish [--notes FILE]       Push main to GitHub, copy the release APKs to the relay, write manifest.json, tag v<version>
   help                         Show this text
 
 Environment:
