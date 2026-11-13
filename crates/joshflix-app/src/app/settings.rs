@@ -153,7 +153,7 @@ impl Controller {
                 Item { kind: "danger", ..Item::action("Remove key", "", "Signs this TV out of Real-Debrid", Action::RemoveKey) },
             ],
             1 => vec![
-                Item::toggle("Autoplay next episode", s.autoplay_next, "Counts down 10 seconds in the last minute", Action::AutoplayNext),
+                Item::toggle("Autoplay next episode", s.autoplay_next, "Starts the next one when an episode ends", Action::AutoplayNext),
                 Item::toggle("Match frame rate", s.frame_rate_matching, "Switches the TV to the video's frame rate (24p…) when supported", Action::FrameRate),
                 Item::toggle("Audio Normalization by default", s.audio_normalization, "Quieter loud scenes, clearer dialogue. Toggle anytime in the player", Action::AudioNormalization),
                 Item::choice(

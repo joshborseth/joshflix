@@ -16,8 +16,9 @@ use crate::{PlayerState, Screen, TrackItem};
 
 const OVERLAY_SECS: u64 = 5;
 const SAVE_EVERY: Duration = Duration::from_secs(10);
+/// The next-episode card shows for the last minute. Autoplay itself waits
+/// for the end of the file, so an episode always plays to its last frame.
 const NEXT_CARD_SECS: f64 = 60.0;
-const COUNTDOWN_SECS: u64 = 10;
 
 /// Give up waiting for a stream to open after this long.
 const OPEN_TIMEOUT: Duration = Duration::from_secs(45);
@@ -44,7 +45,9 @@ struct NextCtl {
     request: Option<PlayRequest>,
     header: String,
     title: String,
-    countdown_from: Option<Instant>,
+    /// Autoplay will start the next episode when this one ends; the card
+    /// counts down the time left.
+    autoplay_armed: bool,
     focused: bool,
     dismissed: bool,
     shown: bool,
@@ -264,7 +267,7 @@ impl Controller {
 
     /// Work out the next episode (and the card's wording) for a series.
     fn next_for(&self, request: &PlayRequest) -> NextCtl {
-        let empty = NextCtl { request: None, header: String::new(), title: String::new(), countdown_from: None, focused: false, dismissed: false, shown: false };
+        let empty = NextCtl { request: None, header: String::new(), title: String::new(), autoplay_armed: false, focused: false, dismissed: false, shown: false };
         let (Some(detail), Some(season), Some(episode)) = (request.context.detail.as_deref(), request.video.season, request.video.episode) else {
             return empty;
         };
@@ -534,10 +537,7 @@ impl Controller {
         state.set_next_header(shared(&p.next.header));
         state.set_next_title(shared(&p.next.title));
         state.set_next_focused(p.next.focused);
-        state.set_next_countdown(match p.next.countdown_from {
-            Some(from) => COUNTDOWN_SECS.saturating_sub(from.elapsed().as_secs()) as i32,
-            None => -1,
-        });
+        state.set_next_countdown(if p.next.autoplay_armed { (p.duration - p.position).max(0.0).ceil() as i32 } else { -1 });
         state.set_error(shared(p.error.as_deref().unwrap_or_default()));
     }
 
@@ -660,29 +660,22 @@ impl Controller {
         if near_end && !p.next.dismissed && !p.next.shown && !p.next.header.is_empty() {
             p.next.shown = true;
             if p.next.request.is_some() && self.settings.autoplay_next {
-                p.next.countdown_from = Some(Instant::now());
+                p.next.autoplay_armed = true;
             }
         }
         if !near_end && p.next.shown && remaining > NEXT_CARD_SECS {
             // Seeked back out of the credits.
             p.next.shown = false;
-            p.next.countdown_from = None;
+            p.next.autoplay_armed = false;
             p.next.focused = false;
         }
-        let countdown_done = p
-            .next
-            .countdown_from
-            .is_some_and(|from| from.elapsed() >= Duration::from_secs(COUNTDOWN_SECS) && !p.paused);
+        // The next episode starts from `on_finished` at the end of the file.
         let save_due = p.video_shown && p.last_save.elapsed() >= SAVE_EVERY && !p.paused;
         // For the house lights (through the relay); buffering doesn't count as a pause.
         let (name, episode) =
             super::video_title(&p.request.context.name, &p.request.video, p.request.context.episode_title.as_deref());
         let title = if episode.is_empty() { name } else { format!("{name} · {episode}") };
         crate::screen_colors::set_now_playing(p.started && !p.paused && p.error.is_none(), Some(&title));
-        if countdown_done {
-            self.play_next();
-            return;
-        }
         if save_due {
             self.save_progress(false);
         }
@@ -785,7 +778,7 @@ impl Controller {
             return;
         }
         let Some(request) = p.next.request.clone() else { return };
-        p.next.countdown_from = None;
+        p.next.autoplay_armed = false;
         p.autoplay_pending = true;
         let previous = p.source.clone();
         self.save_progress(true);
@@ -1011,7 +1004,7 @@ impl Controller {
                 Key::Back => {
                     p.next.focused = false;
                     p.next.dismissed = true;
-                    p.next.countdown_from = None;
+                    p.next.autoplay_armed = false;
                 }
                 _ => {}
             }
@@ -1024,15 +1017,15 @@ impl Controller {
                 if p.error.is_none() && p.seek_target.is_some() {
                     p.seek_target = None;
                     p.seek_commit_at = None;
-                } else if p.next.countdown_from.is_some() {
-                    p.next.countdown_from = None;
+                } else if p.next.autoplay_armed {
+                    p.next.autoplay_armed = false;
                     p.next.dismissed = true;
                 } else {
                     self.exit_player();
                     return true;
                 }
             }
-            Key::Ok if p.next.countdown_from.is_some() => {
+            Key::Ok if p.next.autoplay_armed => {
                 self.play_next();
                 return true;
             }
