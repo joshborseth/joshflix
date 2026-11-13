@@ -316,8 +316,9 @@ export component PillButton inherits Rectangle {
     property <bool> stretch: fill-width > 0px;
     height: compact ? 30px : 36px;
     width: stretch ? fill-width : content.preferred-width + (compact ? 24px : 32px);
-    transform-scale: focused ? (stretch ? 1.02 : 1.05) : 1.0;
-    transform-origin: { x: stretch ? 0px : self.width / 2, y: self.height / 2 };
+    // Full-width buttons don't grow (they'd stick out of their column); fill and glow show focus.
+    transform-scale: focused && !stretch ? 1.05 : 1.0;
+    transform-origin: { x: self.width / 2, y: self.height / 2 };
     animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 
     PillGlow {

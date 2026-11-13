@@ -520,9 +520,10 @@ export component AppWindow inherits Window {
     if Dialog.open: DialogBox { }
 
     // Top right: at the bottom it covered the row or episode just acted on.
+    // In the player, above the seek bar, clear of the title.
     Toast {
-        x: root.width - self.width - Theme.safe-x;
-        y: Theme.safe-y;
+        x: AppState.screen == Screen.player ? (root.width - self.width) / 2 : root.width - self.width - Theme.safe-x;
+        y: AppState.screen == Screen.player ? root.height - self.height - 120px : Theme.safe-y;
         message: AppState.toast;
         shown: AppState.toast-shown;
     }

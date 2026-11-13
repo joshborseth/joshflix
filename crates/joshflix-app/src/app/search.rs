@@ -117,8 +117,8 @@ impl Controller {
         let popular = query.len() < 2;
         let queries = if popular {
             [
-                ("Popular movies", CatalogQuery::new(MediaKind::Movie, CatalogId::Top)),
-                ("Popular shows", CatalogQuery::new(MediaKind::Series, CatalogId::Top)),
+                ("Popular Movies", CatalogQuery::new(MediaKind::Movie, CatalogId::Top)),
+                ("Popular Shows", CatalogQuery::new(MediaKind::Series, CatalogId::Top)),
             ]
         } else {
             [("Movies", CatalogQuery::search(MediaKind::Movie, &query)), ("Shows", CatalogQuery::search(MediaKind::Series, &query))]

@@ -5,7 +5,7 @@ import { PosterCard, PosterRow, Chip, Spinner, OptionList } from "components.sli
 // Poster grid with focus scrolling. Used by Discover and My List.
 export component PosterGrid inherits Rectangle {
     in property <[Poster]> items;
-    in property <int> columns: 6;
+    in property <int> columns: 7;
     in property <int> focused-index: -1;
     in property <bool> centered: false;
     // Room inside the clip for the focus glow of the first column and row.
@@ -41,7 +41,7 @@ export component DiscoverScreen inherits Rectangle {
     in property <int> zone;                // 0 filters, 1 grid
     in property <int> filter-index;
     in property <int> grid-index;
-    in property <int> columns: 6;
+    in property <int> columns: 7;
     // Picker
     in property <bool> picker-open;
     in property <string> picker-title;
@@ -116,7 +116,7 @@ export component MyListScreen inherits Rectangle {
     in property <bool> active;
     in property <int> zone;                // 0 continue watching, 1 grid
     in property <int> grid-index;
-    in property <int> columns: 6;
+    in property <int> columns: 7;
     in property <length> left-pad: Theme.rail-collapsed + 28px;
     property <bool> has-continue: root.continue-row.items.length > 0;
     background: Theme.bg;

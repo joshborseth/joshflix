@@ -170,7 +170,9 @@ export component DetailScreen inherits Rectangle {
 
         if root.has-logo: Image {
             source: root.logo;
-            height: root.compact ? 48px : 70px;
+            // Shows keep one size: the column is anchored at the bottom, so
+            // a shrinking logo would slide the text under the viewer's eye.
+            height: root.is-series ? 56px : 70px;
             width: min(320px, self.height * self.source.width / max(1, self.source.height));
             image-fit: contain;
             horizontal-alignment: left;
@@ -179,7 +181,7 @@ export component DetailScreen inherits Rectangle {
         if !root.has-logo: Text {
             text: root.title;
             color: Theme.text;
-            font-size: root.compact ? Theme.text-2xl : Theme.text-3xl;
+            font-size: root.is-series ? Theme.text-2xl : Theme.text-3xl;
             font-weight: 900;
             wrap: word-wrap;
         }
@@ -216,9 +218,11 @@ export component DetailScreen inherits Rectangle {
             font-size: Theme.text-md;
             wrap: word-wrap;
             overflow: elide;
-            max-height: root.compact ? 48px : 66px;
+            // A fixed three lines for shows (episode synopses vary in length).
+            min-height: root.is-series ? 54px : 0px;
+            max-height: root.is-series ? 54px : 72px;
         }
-        if !root.compact && root.credits != "": Text {
+        if root.credits != "": Text {
             text: root.credits;
             color: Theme.text-faint;
             font-size: Theme.text-sm;
@@ -283,12 +287,17 @@ export component DetailScreen inherits Rectangle {
             background: @linear-gradient(90deg, #0b0d1200 0%, #0b0d12 100%);
         }
         Rectangle {
-            y: 44px;
-            height: 188px;
-            clip: false;
+            // A plain clip just left of the margin: earlier episodes don't
+            // peek in as half cards with cut badges. Room above for the glow.
+            // 10px: inside the 12px card gap, so no sliver of the previous card shows.
+            x: Theme.safe-x - 10px;
+            y: 20px;
+            width: root.width - self.x;
+            height: 212px;
+            clip: true;
             Rectangle {
-                x: Theme.safe-x - root.episode-index * (172px + Theme.card-gap);
-                y: 6px;
+                x: 10px - root.episode-index * (172px + Theme.card-gap);
+                y: 30px;
                 width: root.episodes.length * (172px + Theme.card-gap);
                 animate x { duration: Theme.med; easing: ease-out-quart; }
                 for episode[i] in root.episodes: EpisodeTile {

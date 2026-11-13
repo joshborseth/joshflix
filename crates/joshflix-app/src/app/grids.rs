@@ -11,7 +11,8 @@ use super::{Controller, ImageKind, Key, shared};
 use crate::format;
 use crate::{DiscoverState, MyListState, Poster, TrackItem};
 
-const COLUMNS: usize = 6;
+/// Must match `columns` in grid.slint: seven fill the width inside the safe area.
+const COLUMNS: usize = 7;
 
 pub struct DiscoverCtl {
     kind: MediaKind,
