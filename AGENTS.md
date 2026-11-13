@@ -21,6 +21,10 @@ Several threads release in parallel. Right before you build:
 
 Build and publish from the main checkout. Its `.local/` holds the release keystore, and `cargo xtask apk` without it silently makes a new key whose APKs can't update the installed app.
 
+## Start times
+
+Every playback logs its start in the TV log: `sources for <id>: N in X s` (Comet), `stream resolved in X s` (`0.0 s` when the link was ready ahead), `file loaded after X s` (mpv opened the stream) and `first frame after X s, Y s after Play`. Compare those before and after any change to how playback starts.
+
 ## TV performance
 
 The TV log has a `frames:` line for every 10 s of animation (late frames, missed vsyncs, render+swap ms). The TV runs at 60 Hz, so a frame has 16.7 ms. Read those lines before and after any animation or scrolling change.

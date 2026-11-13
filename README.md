@@ -27,6 +27,8 @@ Screenshots of the first desktop build are in [docs/screenshots](docs/screenshot
 - **Source picker.** A Stremio-style list ranked cached-first, then by quality and health, with badges (4K, Dolby Vision, HDR, REMUX, Atmos…), size, seeders and tracker.
   - **Match my TV** hides formats the screen can't show, and junk CAM and screener copies are hidden too. **Show N hidden sources** brings them back.
   - **Resume** reuses the last source automatically.
+  - **Ready ahead:** while a detail page is open, the app fetches its sources (and those of the episode you rest on), so the picker opens filled, and resolves the Resume source's link, so Resume starts the video at once. The next episode's link is resolved while its card shows.
+- **Starting playback.** From the moment a stream is chosen until its first frame, one screen shows the title, episode and resume point over the backdrop, with the step it's on (getting the stream, opening it, buffering), Real-Debrid and buffering percentages, and a hint when a file is slow. Errors show there too: OK tries again, Back offers other sources. It dissolves into the video.
 - **Player.**
   - **Seeking:** ±10 s with the D-pad, ±30 s while held, with a preview before committing.
   - **Tracks:** audio and subtitle menus, with OpenSubtitles results added to the subtitle menu.
