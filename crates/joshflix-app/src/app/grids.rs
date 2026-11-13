@@ -27,6 +27,8 @@ pub struct DiscoverCtl {
     exhausted: bool,
     generation: u64,
     loaded: bool,
+    /// Shown when the grid is empty: no matches, or why loading failed.
+    message: String,
 }
 
 impl DiscoverCtl {
@@ -45,6 +47,7 @@ impl DiscoverCtl {
             exhausted: false,
             generation: 0,
             loaded: false,
+            message: String::new(),
         }
     }
 
@@ -130,7 +133,8 @@ impl Controller {
 
     pub fn show_discover(&mut self) {
         DiscoverState::get(&self.ui).set_items(ModelRc::from(self.discover.model.clone()));
-        if !self.discover.loaded {
+        // First visit, or the last attempt came back empty or failed.
+        if !self.discover.loaded || (self.discover.items.is_empty() && !self.discover.loading) {
             self.discover.loaded = true;
             self.reload_discover();
         }
@@ -144,6 +148,7 @@ impl Controller {
         d.index = 0;
         d.exhausted = false;
         d.loading = false; // the old page's result is now stale and will be ignored
+        d.message.clear();
         d.generation += 1;
         self.load_discover_page();
     }
@@ -168,6 +173,9 @@ impl Controller {
                     let fresh: Vec<RowItem> = metas.iter().filter(|m| !known.contains(&m.id)).map(RowItem::from_meta).collect();
                     if fresh.is_empty() {
                         c.discover.exhausted = true;
+                        if c.discover.items.is_empty() {
+                            c.discover.message = "Nothing matches these filters. Try another genre or year.".into();
+                        }
                     }
                     let start = c.discover.items.len();
                     for item in &fresh {
@@ -178,6 +186,9 @@ impl Controller {
                     let model = c.discover.model.clone();
                     let end = (start + COLUMNS * 3).min(urls.len());
                     c.load_posters(&model, &urls, start..end, ImageKind::Poster);
+                }
+                Err(e) if c.discover.items.is_empty() => {
+                    c.discover.message = format!("Couldn't load titles. {e} Change a filter, or open Discover again, to retry.");
                 }
                 Err(e) => c.toast(&e.to_string()),
             }
@@ -192,6 +203,7 @@ impl Controller {
         let labels: Vec<slint::SharedString> = d.filter_labels().iter().map(shared).collect();
         state.set_filters(ModelRc::new(VecModel::from(labels)));
         state.set_loading(d.loading);
+        state.set_message(shared(&d.message));
         state.set_zone(d.zone);
         state.set_filter_index(d.filter as i32);
         state.set_grid_index(d.index as i32);

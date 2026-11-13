@@ -1,6 +1,6 @@
 import { Theme, Icons } from "theme.slint";
 import { SourceItem } from "types.slint";
-import { Badge, Spinner, ProgressBar, PillButton } from "components.slint";
+import { Badge, Spinner, PillButton } from "components.slint";
 
 component SourceRow inherits Rectangle {
     in property <SourceItem> source;
@@ -174,7 +174,7 @@ export component SourcesSheet inherits Rectangle {
                 alignment: start;
                 PillButton {
                     label: root.message-action;
-                    icon: Icons.settings;
+                    icon: root.message-action == "Try again" ? Icons.refresh : Icons.settings;
                     focused: root.sources.length == 0;
                 }
             }
@@ -215,73 +215,6 @@ export component SourcesSheet inherits Rectangle {
                     }
                 }
             }
-        }
-    }
-}
-
-// "Getting your stream" overlay while Comet/Real-Debrid resolve the pick.
-export component ResolveOverlay inherits Rectangle {
-    in property <bool> open;
-    in property <string> title;
-    in property <string> status;
-    in property <float> progress;       // < 0 hides the bar
-    in property <string> hint;          // shown after ~10 s of downloading
-    in property <string> error;
-    background: #05060af2;
-    opacity: open ? 1 : 0;
-    animate opacity { duration: Theme.med; }
-
-    VerticalLayout {
-        x: (root.width - self.width) / 2;
-        y: (root.height - self.preferred-height) / 2;
-        width: min(460px, root.width - 80px);
-        spacing: 14px;
-        alignment: center;
-
-        if root.error == "": HorizontalLayout {
-            alignment: center;
-            Spinner { size: 34px; }
-        }
-        if root.error != "": HorizontalLayout {
-            alignment: center;
-            Image {
-                source: Icons.alert;
-                width: 30px;
-                height: 30px;
-                colorize: Theme.danger;
-            }
-        }
-        Text {
-            text: root.title;
-            color: Theme.text;
-            font-size: Theme.text-xl;
-            font-weight: 800;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-        }
-        Text {
-            text: root.error != "" ? root.error : root.status;
-            color: root.error != "" ? Theme.danger : Theme.text-muted;
-            font-size: Theme.text-md;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-        }
-        if root.progress >= 0 && root.error == "": ProgressBar {
-            value: root.progress;
-            height: 6px;
-        }
-        if root.hint != "" && root.error == "": Text {
-            text: root.hint;
-            color: Theme.text-faint;
-            font-size: Theme.text-sm;
-            horizontal-alignment: center;
-            wrap: word-wrap;
-        }
-        Text {
-            text: root.error != "" ? "Press Back to pick another source" : "Press Back to cancel";
-            color: Theme.text-faint;
-            font-size: Theme.text-xs;
-            horizontal-alignment: center;
         }
     }
 }

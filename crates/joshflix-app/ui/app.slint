@@ -6,7 +6,8 @@ import { Toast } from "components.slint";
 import { Rail } from "rail.slint";
 import { BrowseScreen } from "browse.slint";
 import { DetailScreen } from "detail.slint";
-import { SourcesSheet, ResolveOverlay } from "sources.slint";
+import { SourcesSheet } from "sources.slint";
+import { StartCover } from "start.slint";
 import { PlayerOverlay } from "player.slint";
 import { SearchScreen } from "search.slint";
 import { DiscoverScreen, MyListScreen } from "grid.slint";
@@ -40,6 +41,7 @@ export global DetailState {
     in property <image> logo;
     in property <bool> has-logo;
     in property <image> backdrop;
+    in property <bool> has-backdrop;
     in property <string> meta;
     in property <string> rating;
     in property <string> description;
@@ -67,13 +69,24 @@ export global SourcesState {
     in property <[SourceItem]> sources;
     in property <int> focused-index;
     in property <string> footer;
-    // Resolve overlay
-    in property <bool> resolving;
-    in property <string> resolve-title;
-    in property <string> resolve-status;
-    in property <float> resolve-progress: -1;
-    in property <string> resolve-hint;
-    in property <string> resolve-error;
+}
+
+// The full-screen view from choosing a stream until its first frame shows.
+export global StartState {
+    in property <bool> open;
+    in property <image> backdrop;
+    in property <bool> has-backdrop;
+    in property <image> logo;
+    in property <bool> has-logo;
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> resume;
+    in property <string> status;
+    in property <int> step;
+    in property <float> step-progress: -1;
+    in property <string> hint;
+    in property <string> error;
+    in property <bool> can-retry;
 }
 
 export global PlayerState {
@@ -116,12 +129,14 @@ export global SearchState {
     in property <bool> keyboard-active: true;
     in property <bool> searching;
     in property <string> hint;
+    in property <bool> caret-on: true;
 }
 
 export global DiscoverState {
     in property <[string]> filters;
     in property <[Poster]> items;
     in property <bool> loading;
+    in property <string> message;
     in property <int> zone;
     in property <int> filter-index;
     in property <int> grid-index;
@@ -308,6 +323,7 @@ export component AppWindow inherits Window {
         keyboard-active: SearchState.keyboard-active;
         searching: SearchState.searching;
         hint: SearchState.hint;
+        caret-on: SearchState.caret-on;
         active: AppState.content-active;
     }
 
@@ -315,6 +331,7 @@ export component AppWindow inherits Window {
         filters: DiscoverState.filters;
         items: DiscoverState.items;
         loading: DiscoverState.loading;
+        message: DiscoverState.message;
         zone: DiscoverState.zone;
         filter-index: DiscoverState.filter-index;
         grid-index: DiscoverState.grid-index;
@@ -345,12 +362,14 @@ export component AppWindow inherits Window {
         active: AppState.content-active && !SettingsState.pairing-open;
     }
 
-    if AppState.screen == Screen.detail || (AppState.screen == Screen.player && !AppState.video-visible): DetailScreen {
+    // Under the player, the start cover hides everything until the first frame.
+    if AppState.screen == Screen.detail: DetailScreen {
         loading: DetailState.loading;
         title: DetailState.title;
         logo: DetailState.logo;
         has-logo: DetailState.has-logo;
         backdrop: DetailState.backdrop;
+        has-backdrop: DetailState.has-backdrop;
         meta: DetailState.meta;
         rating: DetailState.rating;
         description: DetailState.description;
@@ -423,13 +442,21 @@ export component AppWindow inherits Window {
         visible: SourcesState.open || self.opacity > 0;
     }
 
-    if SourcesState.resolving: ResolveOverlay {
-        open: SourcesState.resolving;
-        title: SourcesState.resolve-title;
-        status: SourcesState.resolve-status;
-        progress: SourcesState.resolve-progress;
-        hint: SourcesState.resolve-hint;
-        error: SourcesState.resolve-error;
+    StartCover {
+        open: StartState.open;
+        backdrop: StartState.backdrop;
+        has-backdrop: StartState.has-backdrop;
+        logo: StartState.logo;
+        has-logo: StartState.has-logo;
+        title: StartState.title;
+        subtitle: StartState.subtitle;
+        resume: StartState.resume;
+        status: StartState.status;
+        step: StartState.step;
+        step-progress: StartState.step-progress;
+        hint: StartState.hint;
+        error: StartState.error;
+        can-retry: StartState.can-retry;
     }
 
     if SettingsState.pairing-open && AppState.screen == Screen.settings: Rectangle {

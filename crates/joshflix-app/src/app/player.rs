@@ -15,6 +15,8 @@ use crate::platform::AudioNormalization;
 use crate::{PlayerState, Screen, TrackItem};
 
 const OVERLAY_SECS: u64 = 5;
+/// How long the title and seek bar show when the first frame appears.
+const FIRST_FRAME_OVERLAY: Duration = Duration::from_secs(4);
 const SAVE_EVERY: Duration = Duration::from_secs(10);
 /// The next-episode card shows for the last minute. Autoplay itself waits
 /// for the end of the file, so an episode always plays to its last frame.
@@ -61,7 +63,7 @@ pub struct PlayerCtl {
     position: f64,
     duration: f64,
     paused: bool,
-    buffering: Option<i64>,
+    pub buffering: Option<i64>,
     pub video_shown: bool,
     overlay_until: Instant,
     zone: i32,
@@ -72,7 +74,7 @@ pub struct PlayerCtl {
     next: NextCtl,
     last_save: Instant,
     finished: bool,
-    error: Option<String>,
+    pub error: Option<String>,
     subtitles: Vec<joshflix_core::subtitles::Subtitle>,
     subtitles_added: bool,
     /// Pick the subtitle track once the track list (incl. added subs) is known.
@@ -81,14 +83,19 @@ pub struct PlayerCtl {
     /// When the file loaded, to detect a stalled zero-copy decoder.
     loaded_at: Option<Instant>,
     /// mpv reported PLAYBACK_RESTART (the first frame is up) for this file.
-    started: bool,
+    pub started: bool,
     /// Seconds buffered ahead (tells a stalled decoder from a slow network).
     cache_ahead: f64,
     /// Next-episode lookup in flight.
     autoplay_pending: bool,
+    /// The next episode being looked up after this one stopped: the start
+    /// cover shows it meanwhile.
+    pub pending_next: Option<PlayRequest>,
+    /// mpv gave up on this stream after it had played: Back offers other sources.
+    source_failed: bool,
     hwdec_fallback: bool,
     /// When playback was requested (to time out a stream that never opens).
-    opened_at: Instant,
+    pub opened_at: Instant,
     /// The open timed out; cleared if the file loads after all.
     open_timed_out: bool,
     /// mpv's latest error message, shown with a failure.
@@ -123,6 +130,7 @@ impl Controller {
         let Some(player) = self.video.player() else {
             let reason = self.video.unavailable_reason().unwrap_or_default();
             self.toast(&format!("The video player isn't available. {reason}"));
+            self.push_start();
             return;
         };
         // Replace whatever is playing (next episode) without leaving the player.
@@ -138,15 +146,17 @@ impl Controller {
         if let Err(e) = player.load(&url, request.resume_at) {
             crate::video::want_video(self.screen == Screen::Player);
             self.toast(&e.to_string());
+            self.push_start();
             return;
         }
         self.platform.keep_screen_on(true);
         tracing::info!(
-            "play {} · {} · cached={} · stream host {}",
+            "play {} · {} · cached={} · stream host {}{}",
             request.video.video_id(),
             source.release.release_name,
             source.cached,
             url.split('/').nth(2).unwrap_or("?"),
+            request.resume_at.filter(|s| *s > 1.0).map(|s| format!(" · resume at {s:.0} s")).unwrap_or_default(),
         );
         let next = self.next_for(&request);
         self.player = Some(PlayerCtl {
@@ -176,6 +186,8 @@ impl Controller {
             started: false,
             cache_ahead: 0.0,
             autoplay_pending: false,
+            pending_next: None,
+            source_failed: false,
             hwdec_fallback: false,
             opened_at: Instant::now(),
             open_timed_out: false,
@@ -198,8 +210,7 @@ impl Controller {
         state.set_menu_open(false);
         state.set_next_visible(false);
         state.set_audio_normalization(normalize);
-        state.set_buffering(true);
-        state.set_buffering_text("Loading…".into());
+        state.set_buffering(false);
         self.set_screen(Screen::Player);
         self.push_player();
 
@@ -251,14 +262,15 @@ impl Controller {
             );
         }
 
-        // Subtitle list from OpenSubtitles (added after the file loads).
+        // Subtitle list from OpenSubtitles, added once the first frame shows:
+        // mpv downloads each one, and the start shouldn't wait behind them.
         let langs = self.settings.subtitle_languages.clone();
         let subs = self.svc.subtitles.clone();
         let video = request.video.clone();
         self.spawn(async move { subs.find(&video, &langs, 3).await.unwrap_or_default() }, move |c, found| {
             if let Some(p) = c.player.as_mut() {
                 p.subtitles = found;
-                if p.video_shown {
+                if p.started {
                     c.add_subtitles();
                 }
             }
@@ -321,14 +333,20 @@ impl Controller {
                 p.subtitle_choice_pending = true;
                 p.loaded_at = Some(Instant::now());
                 self.set_screen(Screen::Player);
-                self.add_subtitles();
             }
             PlayerEvent::Started => {
-                if !p.started {
-                    tracing::info!("first frame after {:.1} s", p.opened_at.elapsed().as_secs_f64());
-                }
+                let first = !p.started;
                 p.buffering = None;
                 p.started = true;
+                if first {
+                    let total = self.sources.play_started.take().map(|t| format!(", {:.1} s after Play", t.elapsed().as_secs_f64()));
+                    tracing::info!("first frame after {:.1} s{}", p.opened_at.elapsed().as_secs_f64(), total.unwrap_or_default());
+                    // The cover dissolves into the video: show where it is for a moment.
+                    p.overlay_until = Instant::now() + FIRST_FRAME_OVERLAY;
+                    p.open_timed_out = false;
+                    p.error = None;
+                    self.add_subtitles();
+                }
                 // Compatibility mode proved itself: remember it for this TV.
                 if self.pending_compat_save {
                     self.pending_compat_save = false;
@@ -402,6 +420,7 @@ impl Controller {
             }
             PlayerEvent::Ended(EndReason::Error(message)) => {
                 tracing::warn!("playback failed: {message} (last mpv error: {:?})", p.last_mpv_error);
+                p.source_failed = true;
                 let detail = p.last_mpv_error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default();
                 p.error = Some(format!("Playback failed: {message}{detail}. Press Back and try another source."));
                 p.buffering = None;
@@ -483,7 +502,10 @@ impl Controller {
 
     fn push_player(&mut self) {
         let Some(p) = self.player.as_mut() else { return };
-        let overlay = Instant::now() < p.overlay_until || p.paused || p.menu.is_some() || p.seek_target.is_some() || p.error.is_some();
+        // Until the first frame, the start cover shows progress and errors.
+        let live = p.started && p.pending_next.is_none();
+        let overlay = live
+            && (Instant::now() < p.overlay_until || p.paused || p.menu.is_some() || p.seek_target.is_some() || p.error.is_some());
         if p.overlay_shown != Some(overlay) {
             p.overlay_shown = Some(overlay);
             if let Some(player) = self.video.player() {
@@ -495,11 +517,10 @@ impl Controller {
         let state = PlayerState::get(&self.ui);
         state.set_overlay_visible(overlay);
         state.set_paused(p.paused);
-        let buffering = p.buffering.is_some() && p.error.is_none();
+        let buffering = live && p.buffering.is_some() && p.error.is_none();
         state.set_buffering(buffering);
         state.set_buffering_text(shared(match p.buffering {
             Some(pct) if pct > 0 => format!("Buffering {pct}%"),
-            _ if !p.video_shown => "Loading…".to_owned(),
             _ => "Buffering…".to_owned(),
         }));
         let progress = if p.duration > 0.0 { (p.position / p.duration) as f32 } else { 0.0 };
@@ -538,7 +559,8 @@ impl Controller {
         state.set_next_title(shared(&p.next.title));
         state.set_next_focused(p.next.focused);
         state.set_next_countdown(if p.next.autoplay_armed { (p.duration - p.position).max(0.0).ceil() as i32 } else { -1 });
-        state.set_error(shared(p.error.as_deref().unwrap_or_default()));
+        state.set_error(shared(if live { p.error.as_deref().unwrap_or_default() } else { "" }));
+        self.push_start();
     }
 
     pub(super) fn player_tick(&mut self) {
@@ -568,7 +590,8 @@ impl Controller {
         // The output shows this file's frames: with force-window or vo=null it
         // can be set up for a dummy size without any video.
         let output_shows_video = p.video_out_width > 0 && p.video_out_width == p.video_width;
-        let playing = p.started && !p.paused && p.buffering.is_none() && p.error.is_none();
+        // While the next episode is looked up, the old file is already stopped.
+        let playing = p.started && !p.paused && p.buffering.is_none() && p.error.is_none() && p.pending_next.is_none();
         // Own-surface mode: playing with a video track but no picture means mpv
         // couldn't show video on its surface. Fall back to drawing it into the
         // UI. No picture is expected while the surface itself is missing.
@@ -611,7 +634,7 @@ impl Controller {
             }
         }
         if p.drops_logged_at.elapsed() >= DROPS_LOG_EVERY {
-            if p.started && !p.paused && p.drops != p.drops_logged {
+            if p.started && !p.paused && p.pending_next.is_none() && p.drops != p.drops_logged {
                 tracing::info!(
                     "playback drops: {} frames by the video output, {} by the decoder in {:.0} s",
                     p.drops.0 - p.drops_logged.0,
@@ -657,12 +680,18 @@ impl Controller {
         let p = self.player.as_mut().expect("player");
         let remaining = p.duration - p.position;
         let near_end = p.duration > 120.0 && remaining <= NEXT_CARD_SECS && remaining > 0.0;
-        if near_end && !p.next.dismissed && !p.next.shown && !p.next.header.is_empty() {
+        if near_end && !p.next.dismissed && !p.next.shown && !p.next.header.is_empty() && p.pending_next.is_none() {
             p.next.shown = true;
             if p.next.request.is_some() && self.settings.autoplay_next {
                 p.next.autoplay_armed = true;
             }
+            // Look up the next episode's sources now, so it starts at once.
+            if let Some(next) = p.next.request.as_ref().map(|r| r.video.clone()) {
+                self.prefetch_streams(&next);
+                self.next_sources_ready(&next.video_id());
+            }
         }
+        let p = self.player.as_mut().expect("player");
         if !near_end && p.next.shown && remaining > NEXT_CARD_SECS {
             // Seeked back out of the credits.
             p.next.shown = false;
@@ -675,7 +704,10 @@ impl Controller {
         let (name, episode) =
             super::video_title(&p.request.context.name, &p.request.video, p.request.context.episode_title.as_deref());
         let title = if episode.is_empty() { name } else { format!("{name} · {episode}") };
-        crate::screen_colors::set_now_playing(p.started && !p.paused && p.error.is_none(), Some(&title));
+        crate::screen_colors::set_now_playing(
+            p.started && !p.paused && p.error.is_none() && p.pending_next.is_none(),
+            Some(&title),
+        );
         if save_due {
             self.save_progress(false);
         }
@@ -765,6 +797,7 @@ impl Controller {
                 self.platform.set_frame_rate(0.0);
             }
         }
+        self.push_start();
     }
 
     fn exit_player(&mut self) {
@@ -782,10 +815,34 @@ impl Controller {
         p.autoplay_pending = true;
         let previous = p.source.clone();
         self.save_progress(true);
+        // Stop the credits now; the start cover shows the next episode while
+        // its stream is found.
+        if let Some(player) = self.video.player() {
+            let _ = player.stop();
+        }
         if let Some(p) = self.player.as_mut() {
             p.finished = true;
+            p.pending_next = Some(request.clone());
+            p.next.shown = false;
+            p.next.focused = false;
+            p.menu = None;
+            p.seek_target = None;
         }
+        self.push_player();
         self.autoplay(request, previous);
+    }
+
+    /// Sources for `video_id` arrived: if it's the next episode, pick its
+    /// release and resolve the link ahead, so autoplay starts at once.
+    pub(super) fn next_sources_ready(&mut self, video_id: &str) {
+        let Some(p) = self.player.as_ref() else { return };
+        let Some(next) = p.next.request.as_ref().filter(|n| n.video.video_id() == video_id) else { return };
+        let Some(found) = self.fresh_streams(video_id) else { return };
+        let ranked = RankedSources::rank(found.sources, &self.settings.filters, &self.caps);
+        if let Some(pick) = pick_for_binge(&ranked, Some(&p.source)).cloned() {
+            let video = next.video.clone();
+            self.resolve_ahead(&video, &pick);
+        }
     }
 
     /// Next episode: pick the same release family as before and play it, or
@@ -795,13 +852,20 @@ impl Controller {
         let video = request.video.clone();
         let (filters, caps) = (self.settings.filters, self.caps);
         if let Some(p) = self.player.as_mut() {
-            p.buffering = Some(0);
             p.error = None;
         }
-        PlayerState::get(&self.ui).set_buffering_text("Finding the next episode…".into());
         self.autoplay_generation += 1;
         let generation = self.autoplay_generation;
-        self.spawn(async move { comet.streams(&video).await }, move |c, result| {
+        // Usually fetched while the next-episode card showed.
+        let ahead = self.fresh_streams(&video.video_id());
+        self.spawn(
+            async move {
+                match ahead {
+                    Some(found) => Ok(found),
+                    None => comet.streams(&video).await,
+                }
+            },
+            move |c, result| {
             // The user left the player (or another lookup started) meanwhile.
             if c.autoplay_generation != generation || c.player.is_none() || c.screen != Screen::Player {
                 return;
@@ -822,7 +886,8 @@ impl Controller {
                     c.show_picker(request);
                 }
             }
-        });
+        },
+        );
     }
 
     fn open_track_menu(&mut self, kind: TrackKind) {
@@ -916,6 +981,33 @@ impl Controller {
         }
     }
 
+    /// Keys before the first frame (the start cover shows): Back cancels, or
+    /// after an error opens the picker; OK tries the source again.
+    fn starting_key(&mut self, key: Key) -> bool {
+        let Some(p) = self.player.as_ref() else { return true };
+        let failed = p.error.is_some() && p.pending_next.is_none();
+        match key {
+            Key::Back | Key::Stop => {
+                let mut request = p.request.clone();
+                // Nothing has played: the saved position stays as it was.
+                self.stop_playback(false);
+                self.pop_screen();
+                if failed {
+                    request.preferred = None;
+                    self.show_picker(request);
+                }
+            }
+            Key::Ok if failed => {
+                let (request, source) = (p.request.clone(), p.source.clone());
+                self.stop_playback(false);
+                // A fresh link: the old one may be what failed.
+                self.resolve(source, request, true);
+            }
+            _ => {}
+        }
+        true
+    }
+
     pub fn player_key(&mut self, key: Key, repeat: bool) -> bool {
         let Some(player) = self.video.player() else {
             self.exit_player();
@@ -925,6 +1017,9 @@ impl Controller {
             self.pop_screen();
             return true;
         };
+        if !p.started || p.pending_next.is_some() {
+            return self.starting_key(key);
+        }
         let overlay_was_visible = Instant::now() < p.overlay_until || p.paused;
 
         // Remote media keys work regardless of focus.
@@ -1020,6 +1115,14 @@ impl Controller {
                 } else if p.next.autoplay_armed {
                     p.next.autoplay_armed = false;
                     p.next.dismissed = true;
+                } else if p.source_failed {
+                    // Resume would pick this source again: offer the others.
+                    let mut request = p.request.clone();
+                    request.preferred = None;
+                    request.resume_at = Some(p.position).filter(|s| *s > 1.0);
+                    self.exit_player();
+                    self.show_picker(request);
+                    return true;
                 } else {
                     self.exit_player();
                     return true;

@@ -176,6 +176,7 @@ impl Controller {
             self.images.failed.insert(key);
             if kind == ImageKind::Logo && waiters.iter().any(|w| matches!(w, ImageSlot::Named)) {
                 self.browse_logo_failed(&url);
+                self.start_logo_failed(&url);
             }
             return;
         };
@@ -215,13 +216,14 @@ impl Controller {
     /// A hero/detail/logo image finished: apply it where it's still wanted.
     fn named_image_ready(&mut self, url: &str, kind: ImageKind, image: Image) {
         match kind {
-            ImageKind::Backdrop => {
-                self.browse_backdrop_ready(url, &image);
+            ImageKind::Backdrop | ImageKind::Logo => {
+                if kind == ImageKind::Backdrop {
+                    self.browse_backdrop_ready(url, &image);
+                } else {
+                    self.browse_logo_ready(url, &image);
+                }
                 self.detail_image_ready(url, kind, &image);
-            }
-            ImageKind::Logo => {
-                self.browse_logo_ready(url, &image);
-                self.detail_image_ready(url, kind, &image);
+                self.start_image_ready(url, kind, &image);
             }
             _ => {}
         }

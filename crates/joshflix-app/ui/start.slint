@@ -1,0 +1,160 @@
+import { Theme, Icons } from "theme.slint";
+import { Spinner } from "components.slint";
+
+// Full-screen "starting playback" view. It covers everything from the moment
+// a stream is chosen until mpv shows the first frame, then dissolves into the
+// video. It stays in the tree and is hidden while `shown` is 0, so the fade
+// out runs. Only leaf elements fade: opacity on an element with children
+// renders it into an offscreen layer every frame, which TV GPUs can't afford.
+export component StartCover inherits Rectangle {
+    in property <bool> open;
+    in property <image> backdrop;
+    in property <bool> has-backdrop;
+    in property <image> logo;
+    in property <bool> has-logo;
+    in property <string> title;
+    in property <string> subtitle;     // "S2 E4 · Title" ("" for movies)
+    in property <string> resume;       // "Resuming at 42:10" ("" = from the start)
+    in property <string> status;
+    in property <int> step;            // 0 stream, 1 open, 2 buffer
+    in property <float> step-progress; // the current step's progress, < 0 unknown
+    in property <string> hint;
+    in property <string> error;
+    in property <bool> can-retry;
+
+    property <float> shown: root.open ? 1 : 0;
+    animate shown { duration: Theme.med; easing: ease-out; }
+    visible: self.shown > 0.001;
+
+    // Opaque base: hides the page below and, on the TV, the video surface
+    // until the first frame is ready.
+    Rectangle {
+        background: Theme.bg;
+        opacity: root.shown;
+    }
+    if root.has-backdrop: Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.backdrop;
+        image-fit: cover;
+        opacity: root.shown * 0.32;
+    }
+    // Legibility under the text.
+    Rectangle {
+        y: root.height * 0.3;
+        height: root.height * 0.7;
+        background: @linear-gradient(180deg, #0b0d1200 0%, #0b0d12cc 55%, #0b0d12 100%);
+        opacity: root.shown;
+    }
+
+    // The content only exists while open: no spinner left animating behind.
+    if root.open: VerticalLayout {
+        x: (root.width - self.width) / 2;
+        y: max(Theme.safe-y, (root.height - self.preferred-height) / 2 + 30px);
+        width: min(520px, root.width - 2 * Theme.safe-x);
+        spacing: 10px;
+        alignment: start;
+
+        if root.has-logo: HorizontalLayout {
+            alignment: center;
+            Image {
+                source: root.logo;
+                height: 72px;
+                width: min(340px, self.height * self.source.width / max(1, self.source.height));
+                image-fit: contain;
+            }
+        }
+        if !root.has-logo: Text {
+            text: root.title;
+            color: Theme.text;
+            font-size: Theme.text-3xl;
+            font-weight: 900;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+        if root.subtitle != "": Text {
+            text: root.subtitle;
+            color: Theme.text;
+            font-size: Theme.text-lg;
+            font-weight: 700;
+            horizontal-alignment: center;
+            overflow: elide;
+        }
+        if root.resume != "": Text {
+            text: root.resume;
+            color: Theme.text-muted;
+            font-size: Theme.text-md;
+            horizontal-alignment: center;
+        }
+
+        Rectangle { height: 14px; }
+
+        if root.error == "": HorizontalLayout {
+            alignment: center;
+            spacing: 10px;
+            Spinner { size: 20px; }
+            Text {
+                text: root.status;
+                color: Theme.text;
+                font-size: Theme.text-md;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+
+        // Three steps: get the stream, open it, buffer it.
+        if root.error == "": HorizontalLayout {
+            alignment: center;
+            spacing: 6px;
+            height: 4px;
+            for i in 3: Rectangle {
+                width: 64px;
+                height: 4px;
+                border-radius: 2px;
+                background: i < root.step ? Theme.accent : (i == root.step ? Theme.accent-soft : #ffffff1a);
+                Rectangle {
+                    x: 0;
+                    width: i == root.step && root.step-progress >= 0 ? parent.width * clamp(root.step-progress, 0, 1) : 0px;
+                    border-radius: 2px;
+                    background: Theme.accent;
+                    animate width { duration: Theme.med; }
+                }
+            }
+        }
+
+        if root.error != "": HorizontalLayout {
+            alignment: center;
+            Image {
+                source: Icons.alert;
+                width: 26px;
+                height: 26px;
+                colorize: Theme.danger;
+            }
+        }
+        if root.error != "": Text {
+            text: root.error;
+            color: Theme.text;
+            font-size: Theme.text-md;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        if root.hint != "" && root.error == "": Text {
+            text: root.hint;
+            color: Theme.text-muted;
+            font-size: Theme.text-sm;
+            horizontal-alignment: center;
+            wrap: word-wrap;
+        }
+
+        Rectangle { height: 6px; }
+        Text {
+            text: root.error == ""
+                ? "Press Back to cancel"
+                : (root.can-retry ? "Press OK to try again  ·  Back to choose another source" : "Press Back to choose another source");
+            color: Theme.text-faint;
+            font-size: Theme.text-xs;
+            horizontal-alignment: center;
+        }
+    }
+}

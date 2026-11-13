@@ -101,6 +101,7 @@ export component DetailScreen inherits Rectangle {
     in property <image> logo;
     in property <bool> has-logo;
     in property <image> backdrop;
+    in property <bool> has-backdrop;     // fades the backdrop in when it arrives
     in property <string> meta;
     in property <string> rating;
     in property <string> description;
@@ -124,7 +125,7 @@ export component DetailScreen inherits Rectangle {
         image-a: root.backdrop;
         image-b: root.backdrop;
         show-b: false;
-        strength: root.zone == 2 ? 0.55 : 1.0;
+        strength: !root.has-backdrop ? 0 : (root.zone == 2 ? 0.55 : 1.0);
     }
 
     if root.loading: Spinner {

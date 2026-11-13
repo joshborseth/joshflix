@@ -33,6 +33,7 @@ export component DiscoverScreen inherits Rectangle {
     in property <[string]> filters;        // "Movies", "Popular", "All genres"
     in property <[Poster]> items;
     in property <bool> loading;
+    in property <string> message;          // empty or error text when nothing shows
     in property <bool> active;
     in property <int> zone;                // 0 filters, 1 grid
     in property <int> filter-index;
@@ -69,6 +70,21 @@ export component DiscoverScreen inherits Rectangle {
     if root.loading && root.items.length == 0: Spinner {
         x: root.left-pad;
         y: Theme.safe-y + 96px;
+    }
+    if !root.loading && root.items.length == 0 && root.message != "": Text {
+        x: root.left-pad;
+        y: Theme.safe-y + 96px;
+        width: min(520px, root.width - self.x - Theme.safe-x);
+        text: root.message;
+        color: Theme.text-muted;
+        font-size: Theme.text-lg;
+        wrap: word-wrap;
+    }
+    // More pages on their way while scrolling near the end.
+    if root.loading && root.items.length > 0: Spinner {
+        x: root.width - Theme.safe-x - self.width;
+        y: Theme.safe-y + 40px;
+        size: 20px;
     }
     PosterGrid {
         x: root.left-pad - 6px;

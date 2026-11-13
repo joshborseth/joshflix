@@ -12,6 +12,9 @@ export component SearchScreen inherits Rectangle {
     in property <bool> active;          // false while the rail has focus
     in property <bool> searching;
     in property <string> hint;
+    // Blinks from a Rust timer: an animation-tick() blink redrew the whole
+    // screen 60 times a second.
+    in property <bool> caret-on: true;
     in property <length> left-pad: Theme.rail-collapsed + 28px;
 
     property <length> kb-w: 6 * (34px + 5px) - 5px;
@@ -55,7 +58,7 @@ export component SearchScreen inherits Rectangle {
                 height: 18px;
                 background: Theme.accent;
                 visible: root.active && root.keyboard-active && root.query != "";
-                opacity: mod(animation-tick() / 1ms, 1000) < 520 ? 1 : 0;
+                opacity: root.caret-on ? 1 : 0;
             }
             caret-measure := Text {
                 visible: false;

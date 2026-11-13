@@ -20,7 +20,13 @@ pub struct SearchCtl {
     generation: u64,
     searching: usize,
     debounce: slint::Timer,
+    /// Blinks the caret twice a second (only while Search shows).
+    caret: slint::Timer,
+    caret_on: bool,
 }
+
+/// Caret blink half-period.
+const CARET_BLINK: Duration = Duration::from_millis(530);
 
 impl SearchCtl {
     pub fn new() -> Self {
@@ -34,6 +40,8 @@ impl SearchCtl {
             generation: 0,
             searching: 0,
             debounce: slint::Timer::default(),
+            caret: slint::Timer::default(),
+            caret_on: true,
         }
     }
 }
@@ -46,9 +54,22 @@ impl Controller {
         self.push_search();
     }
 
-    fn push_search(&self) {
+    fn push_search(&mut self) {
+        // Solid while keys are pressed, blinking once they stop.
+        self.search.caret_on = true;
+        self.search.caret.start(slint::TimerMode::Repeated, CARET_BLINK, || {
+            with_controller(|c| {
+                if c.screen != crate::Screen::Search {
+                    c.search.caret.stop();
+                    return;
+                }
+                c.search.caret_on = !c.search.caret_on;
+                SearchState::get(&c.ui).set_caret_on(c.search.caret_on);
+            });
+        });
         let s = &self.search;
         let state = SearchState::get(&self.ui);
+        state.set_caret_on(true);
         state.set_query(shared(&s.query));
         state.set_key_index(s.keyboard.index as i32);
         state.set_keyboard_active(s.keyboard_active);
@@ -102,9 +123,13 @@ impl Controller {
                     return;
                 }
                 c.search.searching = c.search.searching.saturating_sub(1);
-                let items: Vec<RowItem> = result.unwrap_or_default().iter().take(30).map(RowItem::from_meta).collect();
+                let noun = if index == 0 { "movies" } else { "shows" };
+                let (items, empty_text) = match result {
+                    Ok(found) => (found.iter().take(30).map(RowItem::from_meta).collect::<Vec<_>>(), format!("No {noun} found")),
+                    Err(e) => (Vec::new(), format!("Couldn't search {noun}. {e}")),
+                };
                 let Some(row) = c.search.rows.get_mut(index) else { return };
-                row.empty_text = format!("No {} found", if index == 0 { "movies" } else { "shows" });
+                row.empty_text = empty_text;
                 row.set_items(items);
                 let data = row.to_row();
                 if index < c.search.model.row_count() {

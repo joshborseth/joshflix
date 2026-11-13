@@ -62,7 +62,12 @@ pub struct DetailCtl {
     backdrop_url: Option<String>,
     logo_url: Option<String>,
     generation: u64,
+    /// Fires once focus rests on an episode, to fetch its sources ahead.
+    ahead_timer: slint::Timer,
 }
+
+/// How long focus rests on an episode before its sources are fetched ahead.
+const EPISODE_AHEAD: std::time::Duration = std::time::Duration::from_millis(600);
 
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -87,6 +92,7 @@ impl Controller {
             backdrop_url: None,
             logo_url: None,
             generation,
+            ahead_timer: slint::Timer::default(),
         };
         self.detail = Some(detail);
         let state = DetailState::get(&self.ui);
@@ -100,6 +106,7 @@ impl Controller {
         state.set_buttons(ModelRc::default());
         state.set_has_logo(false);
         state.set_backdrop(Image::default());
+        state.set_has_backdrop(false);
         if let Some(preview) = &target.preview {
             self.push_preview(preview);
         } else {
@@ -156,6 +163,7 @@ impl Controller {
             && let Some(image) = self.images.request(&url, ImageKind::Backdrop, ImageSlot::Named)
         {
             state.set_backdrop(image);
+            state.set_has_backdrop(true);
         }
         if let Some(url) = logo
             && let Some(image) = self.images.request(&url, ImageKind::Logo, ImageSlot::Named)
@@ -294,6 +302,37 @@ impl Controller {
             self.refresh_episode_cards();
         }
         self.push_detail_focus();
+        self.play_target_ahead();
+    }
+
+    /// Get Play ready while the page is read: resolve the Resume source's
+    /// link, and fetch the sources the picker (or Start over) shows.
+    fn play_target_ahead(&mut self) {
+        let Some(detail) = self.detail.as_ref() else { return };
+        let Some(DetailAction::Play { video, last, .. }) = detail.actions.first().cloned() else { return };
+        if let Some(source) = last {
+            self.resolve_ahead(&video, &source);
+        }
+        self.prefetch_streams(&video);
+    }
+
+    /// Focus rested on an episode: fetch its sources (or resolve its last
+    /// source) so Play starts at once.
+    fn episode_ahead_later(&mut self) {
+        let Some(detail) = self.detail.as_ref() else { return };
+        let generation = detail.generation;
+        detail.ahead_timer.start(slint::TimerMode::SingleShot, EPISODE_AHEAD, move || {
+            super::with_controller(|c| {
+                let Some(detail) = c.detail.as_ref().filter(|d| d.generation == generation && d.zone == 2) else { return };
+                let Some(episode) = detail.episodes.get(detail.episode_index) else { return };
+                let video = VideoRef::episode(&detail.id, episode.season, episode.episode);
+                let last = detail.progress.get(&episode.id).and_then(|p| p.last_source.clone()).map(|l| l.stream);
+                if let Some(source) = last {
+                    c.resolve_ahead(&video, &source);
+                }
+                c.prefetch_streams(&video);
+            });
+        });
     }
 
     fn load_season(&mut self) {
@@ -366,6 +405,7 @@ impl Controller {
         let state = DetailState::get(&self.ui);
         if kind == ImageKind::Backdrop && detail.backdrop_url.as_deref() == Some(url) {
             state.set_backdrop(image.clone());
+            state.set_has_backdrop(true);
         }
         if kind == ImageKind::Logo && detail.logo_url.as_deref() == Some(url) {
             state.set_logo(image.clone());
@@ -406,9 +446,18 @@ impl Controller {
                 }
             }
             (1, Key::Up) => detail.zone = 0,
-            (1, Key::Down) | (1, Key::Ok) => detail.zone = 2,
-            (2, Key::Left) => detail.episode_index = detail.episode_index.saturating_sub(1),
-            (2, Key::Right) => detail.episode_index = (detail.episode_index + 1).min(detail.episodes.len().saturating_sub(1)),
+            (1, Key::Down) | (1, Key::Ok) => {
+                detail.zone = 2;
+                self.episode_ahead_later();
+            }
+            (2, Key::Left) => {
+                detail.episode_index = detail.episode_index.saturating_sub(1);
+                self.episode_ahead_later();
+            }
+            (2, Key::Right) => {
+                detail.episode_index = (detail.episode_index + 1).min(detail.episodes.len().saturating_sub(1));
+                self.episode_ahead_later();
+            }
             (2, Key::Up) => detail.zone = 1,
             (2, Key::Ok) => {
                 if let Some(episode) = detail.episodes.get(detail.episode_index).cloned() {

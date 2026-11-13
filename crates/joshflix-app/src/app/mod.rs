@@ -15,6 +15,7 @@ mod player;
 mod search;
 mod settings;
 mod sources;
+mod start;
 
 use std::cell::RefCell;
 use std::future::Future;
@@ -214,6 +215,7 @@ pub struct Controller {
     pub settings_ctl: settings::SettingsCtl,
     pub detail: Option<detail::DetailCtl>,
     pub sources: sources::SourcesCtl,
+    pub start: start::StartCtl,
     pub player: Option<player::PlayerCtl>,
     pub pairing: pairing::PairingCtl,
     pub onboarding_step: i32,
@@ -263,6 +265,7 @@ impl Controller {
             settings_ctl: settings::SettingsCtl::new(),
             detail: None,
             sources: sources::SourcesCtl::default(),
+            start: start::StartCtl::default(),
             player: None,
             pairing: pairing::PairingCtl::new(),
             onboarding_step: 0,
