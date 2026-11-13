@@ -112,7 +112,12 @@ impl RowItem {
                     _ => format::time_left(p.duration_secs - p.position_secs),
                 },
                 rating: String::new(),
-                description: if p.up_next { "Ready for the next episode.".into() } else { format!("Resume at {}", format::clock(p.position_secs)) },
+                // Continue Watching is where the action sheet matters most: say how to reach it.
+                description: if p.up_next {
+                    "Ready for the next episode.  ·  Hold OK for options".into()
+                } else {
+                    format!("Resume at {}  ·  Hold OK for options", format::clock(p.position_secs))
+                },
             },
             // The page shows title and art at once, and stays usable if Cinemeta fails.
             target: OpenTarget {
@@ -190,7 +195,11 @@ impl RowCtl {
         let same_card = |a: &RowItem, b: &RowItem| {
             a.id == b.id && a.subtitle == b.subtitle && a.progress == b.progress && a.badge == b.badge && a.image == b.image
         };
-        if self.items.len() == items.len() && self.model.row_count() == items.len() {
+        let changed = self.items.iter().zip(&items).filter(|(a, b)| !same_card(a, b)).count();
+        // Mostly the same cards (a few changed in place): patch them. A list
+        // that shifted changes nearly every index: one reset is cheaper, and
+        // its artwork comes straight back from the cache.
+        if self.items.len() == items.len() && self.model.row_count() == items.len() && changed * 2 <= items.len() {
             // Patch changed cards only (a fresh catalog replacing the saved
             // one): a reset would rebuild every card and re-upload textures.
             for (i, (old, new)) in self.items.iter().zip(&items).enumerate() {

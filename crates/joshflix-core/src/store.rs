@@ -129,6 +129,9 @@ pub struct Progress {
     /// again saves a fresh record without this.
     #[serde(default)]
     pub hidden: bool,
+    /// Where it stood before "Mark as watched", restored by "Mark as unwatched".
+    #[serde(default)]
+    pub marked_from: Option<f64>,
 }
 
 impl Progress {
@@ -374,6 +377,7 @@ mod tests {
             up_next: false,
             last_source: None,
             hidden: false,
+            marked_from: None,
         }
     }
 

@@ -61,8 +61,9 @@ impl Controller {
         let state = SearchState::get(&self.ui);
         state.set_keys(self.search.keyboard.model(&crate::Icons::get(&self.ui)));
         state.set_rows(ModelRc::from(self.search.model.clone()));
-        if self.search.rows.is_empty() {
-            // Popular titles until something is typed.
+        // Popular titles until something is typed (again, if they failed last time).
+        let failed = self.search.searching == 0 && !self.search.rows.iter().any(RowCtl::is_navigable);
+        if self.search.rows.is_empty() || (self.search.query.trim().len() < 2 && failed) {
             self.run_search();
         }
         self.push_search();
@@ -92,6 +93,8 @@ impl Controller {
         let has_results = s.rows.iter().any(RowCtl::is_navigable);
         let hint = if s.query.trim().len() == 1 {
             "Type at least two letters to search movies and shows."
+        } else if s.searching == 0 && !has_results && s.query.trim().is_empty() {
+            "Couldn't load popular titles. Check the TV's internet connection, or type to search."
         } else if s.searching == 0 && !has_results {
             "No matches. Try a different spelling."
         } else {
@@ -110,11 +113,18 @@ impl Controller {
 
     fn run_search(&mut self) {
         let query = self.search.query.trim().to_owned();
-        self.search.generation += 1;
-        let generation = self.search.generation;
         use joshflix_core::cinemeta::{CatalogId, CatalogQuery};
         // Under two letters: popular titles, so the screen is never empty.
         let popular = query.len() < 2;
+        // Already showing them (typing a first letter, or deleting back to one): keep them.
+        let showing_popular = self.search.rows.first().is_some_and(|r| r.title == "Popular Movies")
+            && self.search.rows.iter().any(|r| r.loading || r.is_navigable());
+        if popular && showing_popular {
+            self.push_search();
+            return;
+        }
+        self.search.generation += 1;
+        let generation = self.search.generation;
         let queries = if popular {
             [
                 ("Popular Movies", CatalogQuery::new(MediaKind::Movie, CatalogId::Top)),
@@ -133,7 +143,14 @@ impl Controller {
         self.push_search();
         for (index, (_, q)) in queries.into_iter().enumerate() {
             let cinemeta = self.svc.cinemeta.clone();
-            self.spawn(async move { cinemeta.catalog(&q).await }, move |c, result| {
+            let fetch = async move {
+                // Home keeps these catalogs on disk: no wait for the network.
+                if popular && let Some(saved) = cinemeta.cached_catalog(&q).await {
+                    return Ok(saved);
+                }
+                cinemeta.catalog(&q).await
+            };
+            self.spawn(fetch, move |c, result| {
                 if c.search.generation != generation {
                     return;
                 }
@@ -141,6 +158,7 @@ impl Controller {
                 let noun = if index == 0 { "movies" } else { "shows" };
                 let (items, empty_text) = match result {
                     Ok(found) => (found.iter().take(30).map(RowItem::from_meta).collect::<Vec<_>>(), format!("No {noun} found")),
+                    Err(e) if popular => (Vec::new(), format!("Couldn't load popular {noun}. {e}")),
                     Err(e) => (Vec::new(), format!("Couldn't search {noun}. {e}")),
                 };
                 let Some(row) = c.search.rows.get_mut(index) else { return };

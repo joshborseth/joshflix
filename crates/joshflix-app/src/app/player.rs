@@ -130,12 +130,16 @@ pub struct PlayerCtl {
     overlay_dismissed: bool,
     /// The subtitle track (or none) to pick again once this reopened stream lists it.
     restore_subtitle: Option<Option<i64>>,
+    /// The subtitle track (or none) the user picked from the menu.
+    user_subtitle: Option<Option<i64>>,
+    /// A reopen is scheduled (later attempts wait for the network).
+    reconnect_waiting: bool,
 }
 
 impl PlayerCtl {
     /// The stream is being reopened after it dropped mid-play.
     pub fn reconnecting(&self) -> bool {
-        self.reconnects > 0 && !self.started
+        (self.reconnects > 0 && !self.started) || self.reconnect_waiting
     }
 
     fn controls(&self) -> usize {
@@ -232,6 +236,8 @@ impl Controller {
             subtitle_user_choice: false,
             overlay_dismissed: false,
             restore_subtitle: None,
+            user_subtitle: None,
+            reconnect_waiting: false,
         });
         let (title, subtitle) = super::video_title(&request.context.name, &request.video, request.context.episode_title.as_deref());
         let state = PlayerState::get(&self.ui);
@@ -459,7 +465,7 @@ impl Controller {
                 if !near_end {
                     // Only a stream that played counts as dropped (a link that
                     // ends at once is broken, and reopening it won't help).
-                    if p.started && p.reconnects < MAX_RECONNECTS {
+                    if (p.started || p.reconnects > 0) && p.reconnects < MAX_RECONNECTS {
                         self.reconnect("the stream ended early");
                         return;
                     }
@@ -488,7 +494,7 @@ impl Controller {
                     return;
                 }
                 // It had played, so the link works: most likely the connection dropped.
-                if p.started && p.reconnects < MAX_RECONNECTS {
+                if (p.started || p.reconnects > 0) && p.reconnects < MAX_RECONNECTS {
                     self.reconnect("playback failed");
                     return;
                 }
@@ -827,6 +833,7 @@ impl Controller {
             up_next: false,
             last_source: Some(LastSource { stream: p.source.clone() }),
             hidden: false,
+            marked_from: None,
         };
         let watched = progress.is_watched();
         // Queue the next episode for Continue Watching.
@@ -844,6 +851,7 @@ impl Controller {
             up_next: true,
             last_source: None,
             hidden: false,
+            marked_from: None,
         });
         // Database writes fsync; keep them off the thread that renders video.
         let store = self.svc.store.clone();
@@ -1094,15 +1102,29 @@ impl Controller {
             return;
         }
         let attempt = p.reconnects + 1;
+        // The first reopen is immediate; later ones wait 3, 6, 9 s for the network to come back.
+        let delay = Duration::from_secs(3 * u64::from(attempt - 1));
+        if !delay.is_zero() && !p.reconnect_waiting {
+            p.reconnect_waiting = true;
+            p.buffering = None;
+            tracing::warn!("{why}; reopening in {} s", delay.as_secs());
+            let (url, why) = (p.url.clone(), why.to_owned());
+            slint::Timer::single_shot(delay, move || {
+                super::with_controller(|c| {
+                    if c.player.as_ref().is_some_and(|p| p.url == url && p.reconnect_waiting) {
+                        c.reconnect(&why);
+                    }
+                });
+            });
+            self.push_player();
+            return;
+        }
         let mut request = p.request.clone();
         let at = p.seek_target.unwrap_or(p.position);
         request.resume_at = Some(at).filter(|s| *s > 1.0).or(request.resume_at);
         let (source, url, next) = (p.source.clone(), p.url.clone(), (p.next.dismissed, p.next.shown));
-        let user_subtitle = p.subtitle_user_choice.then(|| {
-            self.video
-                .player()
-                .and_then(|pl| pl.tracks().into_iter().find(|t| t.kind == TrackKind::Subtitle && t.selected).map(|t| t.id))
-        });
+        // Read from the session, not mpv: its track list is gone once the file ended.
+        let user_subtitle = p.user_subtitle;
         tracing::warn!("{why}; reopening the stream at {at:.0} s (attempt {attempt} of {MAX_RECONNECTS})");
         self.save_progress(false);
         // Keep the session's screen-on and frame-rate state: no stop_playback,
@@ -1114,6 +1136,7 @@ impl Controller {
             (p.next.dismissed, p.next.shown) = next;
             if let Some(subtitle) = user_subtitle {
                 p.subtitle_user_choice = true;
+                p.user_subtitle = Some(subtitle);
                 p.restore_subtitle = Some(subtitle);
             }
         }
@@ -1227,6 +1250,7 @@ impl Controller {
                         // Later OpenSubtitles results mustn't undo this choice.
                         p.subtitle_choice_pending = false;
                         p.subtitle_user_choice = true;
+                        p.user_subtitle = Some(id);
                     }
                     p.menu = None;
                     self.refresh_subtitle_state();

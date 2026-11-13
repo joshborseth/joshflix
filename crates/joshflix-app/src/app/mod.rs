@@ -337,10 +337,11 @@ impl Controller {
             self.go_section(Section::Home);
             // The action sheet has no button: say how to reach it, for the first few launches.
             if self.settings.hold_tips_shown < 3 {
-                self.save_settings(|s| s.hold_tips_shown += 1);
                 slint::Timer::single_shot(Duration::from_secs(4), || {
                     with_controller(|c| {
+                        // Counted only when it actually showed.
                         if c.dialog.is_none() && c.screen == Screen::Browse {
+                            c.save_settings(|s| s.hold_tips_shown += 1);
                             c.toast("Tip: hold OK on a title for more options");
                         }
                     });

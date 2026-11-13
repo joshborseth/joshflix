@@ -4,6 +4,7 @@
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Weak;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use joshflix_core::images::ImageLoader;
 use slint::{Image, Model, Rgba8Pixel, SharedPixelBuffer, VecModel};
@@ -72,7 +73,10 @@ pub struct ImageCache {
     decode_cards: Arc<Semaphore>,
     decode_large: Arc<Semaphore>,
     /// Bumped when the browse hero moves on (see `backdrops_moved_on`).
-    backdrop_generation: Arc<std::sync::atomic::AtomicU64>,
+    backdrop_generation: Arc<AtomicU64>,
+    /// Per queued backdrop: the generation it was last asked for in.
+    backdrop_wanted: HashMap<String, Arc<AtomicU64>>,
+    decode_logo: Arc<Semaphore>,
 }
 
 /// Decoded artwork kept for reuse, by bytes (a backdrop is 5–8 MB, a poster 0.3 MB).
@@ -113,7 +117,9 @@ impl ImageCache {
             // queue behind a 1080p backdrop for a title already scrolled past.
             decode_cards: Arc::new(Semaphore::new(2)),
             decode_large: Arc::new(Semaphore::new(1)),
-            backdrop_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            backdrop_generation: Arc::new(AtomicU64::new(0)),
+            backdrop_wanted: HashMap::new(),
+            decode_logo: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -150,7 +156,12 @@ impl ImageCache {
             self.failed.remove(&key);
         }
         self.waiters.entry(key.clone()).or_default().push(slot);
+        let generation = self.backdrop_generation.load(Ordering::Relaxed);
         if !self.inflight.insert(key.clone()) {
+            // Asked for again while queued: it's wanted as of now.
+            if let Some(wanted) = self.backdrop_wanted.get(&key) {
+                wanted.store(generation, Ordering::Relaxed);
+            }
             return None;
         }
         let (w, h) = kind.logical_size();
@@ -158,22 +169,33 @@ impl ImageCache {
         let radius = kind.card_radius().map(|r| r * self.scale);
         let loader = self.loader.clone();
         let net = self.net.clone();
-        // Logos are small and the hero shows no title until its logo lands.
-        let decode = if kind == ImageKind::Backdrop { self.decode_large.clone() } else { self.decode_cards.clone() };
-        // A backdrop whose hero moved on before its turn to decode is dropped.
-        let wanted = (kind == ImageKind::Backdrop).then(|| (self.backdrop_generation.clone(), self.backdrop_generation.load(std::sync::atomic::Ordering::Relaxed)));
+        // Logos get their own lane: the hero shows no title until its logo lands.
+        let decode = match kind {
+            ImageKind::Backdrop => self.decode_large.clone(),
+            ImageKind::Logo => self.decode_logo.clone(),
+            _ => self.decode_cards.clone(),
+        };
+        // A backdrop nobody asked for since the hero moved on is dropped
+        // before it takes a download or decode slot.
+        let wanted = (kind == ImageKind::Backdrop).then(|| {
+            let wanted = Arc::new(AtomicU64::new(generation));
+            self.backdrop_wanted.insert(key.clone(), wanted.clone());
+            (self.backdrop_generation.clone(), wanted)
+        });
+        let stale = move || wanted.as_ref().is_some_and(|(current, at)| current.load(Ordering::Relaxed) != at.load(Ordering::Relaxed));
         let url = url.to_owned();
         self.rt.spawn(async move {
             // Err(true): no longer wanted (not a failure); Err(false): failed.
             let result: Result<Pixels, bool> = async {
                 let bytes = {
                     let _permit = net.acquire().await.map_err(|_| false)?;
+                    if stale() {
+                        return Err(true);
+                    }
                     loader.fetch(&url).await.map_err(|_| false)?
                 };
                 let _permit = decode.acquire().await.map_err(|_| false)?;
-                if let Some((current, at)) = &wanted
-                    && current.load(std::sync::atomic::Ordering::Relaxed) != *at
-                {
+                if stale() {
                     return Err(true);
                 }
                 let started = std::time::Instant::now();
@@ -204,7 +226,7 @@ impl ImageCache {
     /// The browse hero moved on: backdrops queued for earlier heroes are dropped
     /// when their turn to decode comes (the one asked for next is kept).
     pub fn backdrops_moved_on(&self) {
-        self.backdrop_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.backdrop_generation.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Start loading an image nobody shows yet, so it's ready when focus arrives.
@@ -255,6 +277,7 @@ impl ImageCache {
 impl Controller {
     fn image_loaded(&mut self, key: String, url: String, kind: ImageKind, pixels: Result<Pixels, bool>) {
         self.images.inflight.remove(&key);
+        self.images.backdrop_wanted.remove(&key);
         let waiters = self.images.waiters.remove(&key).unwrap_or_default();
         let pixels = match pixels {
             Ok(pixels) => pixels,

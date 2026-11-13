@@ -84,11 +84,12 @@ impl Controller {
                 error: String::new(),
             });
         }
-        if p.started {
+        // A reopen waiting for the network shows the cover again.
+        if p.started && !p.reconnecting() {
             return None;
         }
         let (status, step, progress) = match (p.video_shown, p.buffering) {
-            (false, _) if p.reconnecting() => ("Reconnecting…".to_owned(), 1, -1.0),
+            _ if p.reconnecting() => ("Reconnecting…".to_owned(), 1, -1.0),
             (false, _) => ("Opening the video…".to_owned(), 1, -1.0),
             (true, Some(pct)) if pct > 0 => (format!("Buffering {pct}%"), 2, pct as f32 / 100.0),
             (true, _) => ("Starting playback…".to_owned(), 2, -1.0),

@@ -150,21 +150,20 @@ impl Controller {
                     background: c.background,
                     thumbnail: c.thumbnail,
                     logo: c.logo,
-                    position_secs: 0.0,
+                    position_secs: existing.as_ref().map_or(0.0, |p| p.position_secs),
                     duration_secs: existing.as_ref().map_or(0.0, |p| p.duration_secs),
                     updated_at: 0,
                     up_next: false,
                     last_source: existing.and_then(|p| p.last_source),
                     hidden: false,
+                    marked_from: None,
                 };
                 self.mark_episode_watched(progress)
             }
             (DialogAction::MarkUnwatched, MenuTarget::Card(card)) => {
-                store.remove_progress(&VideoRef::movie(&card.id)).map(|()| "Marked as unwatched")
+                unmark(&store, &VideoRef::movie(&card.id)).map(|()| "Marked as unwatched")
             }
-            (DialogAction::MarkUnwatched, MenuTarget::Episode { video }) => {
-                store.remove_progress(&video).map(|()| "Marked as unwatched")
-            }
+            (DialogAction::MarkUnwatched, MenuTarget::Episode { video }) => unmark(&store, &video).map(|()| "Marked as unwatched"),
             (DialogAction::ToggleList, MenuTarget::Card(card)) => {
                 if store.in_library(&card.id).unwrap_or(false) {
                     store.remove_from_library(&card.id).map(|_| "Removed from My List")
@@ -197,34 +196,70 @@ impl Controller {
         if !newest {
             return store.save_progress_keep_time(watched(progress)).map(|()| "Marked as watched");
         }
-        let next = self.detail.as_ref().and_then(|d| d.meta.clone()).and_then(|meta| {
-            let (s, e) = (progress.video.season?, progress.video.episode?);
-            meta.next_episode(s, e).filter(|n| n.is_released(&crate::format::today())).cloned()
-        });
-        let up_next = next.map(|n| Progress {
-            video: VideoRef::episode(&progress.video.meta_id, n.season, n.episode),
-            episode_title: Some(n.title),
-            thumbnail: n.thumbnail,
-            position_secs: 0.0,
-            duration_secs: 0.0,
-            up_next: true,
-            last_source: None,
-            ..progress.clone()
-        });
+        let meta = self.detail.as_ref().and_then(|d| d.meta.clone());
+        let today = crate::format::today();
+        let template = progress.clone();
         store.save_progress(watched(progress))?;
-        if let Some(next) = up_next
-            && store.progress(&next.video)?.is_none_or(|existing| existing.up_next)
-        {
+        // The show moves on to the first aired episode not yet watched: one
+        // already started is brought forward as it is, an untouched one is
+        // queued as Up next (as after playback).
+        let Some(meta) = meta else { return Ok("Marked as watched") };
+        let (Some(mut season), Some(mut episode)) = (template.video.season, template.video.episode) else {
+            return Ok("Marked as watched");
+        };
+        while let Some(n) = meta.next_episode(season, episode).filter(|n| n.is_released(&today)).cloned() {
+            let video = VideoRef::episode(&template.video.meta_id, n.season, n.episode);
+            (season, episode) = (n.season, n.episode);
+            let existing = store.progress(&video)?;
+            if existing.as_ref().is_some_and(|e| e.is_watched()) {
+                continue;
+            }
             std::thread::sleep(std::time::Duration::from_millis(2)); // newer than the watched one
-            store.save_progress(next)?;
+            match existing {
+                Some(started) if !started.up_next => store.save_progress(Progress { hidden: false, ..started })?,
+                _ => store.save_progress(Progress {
+                    video,
+                    episode_title: Some(n.title),
+                    thumbnail: n.thumbnail,
+                    position_secs: 0.0,
+                    duration_secs: 0.0,
+                    up_next: true,
+                    last_source: None,
+                    marked_from: None,
+                    ..template
+                })?,
+            }
+            break;
         }
         Ok("Marked as watched")
     }
 }
 
+/// "Mark as unwatched": back to where it stood before it was marked (or no
+/// record), dropping the Up next that watching it queued, and keeping a show
+/// that was taken off Continue Watching off it.
+fn unmark(store: &joshflix_core::store::Store, video: &VideoRef) -> joshflix_core::Result<()> {
+    let Some(record) = store.progress(video)? else { return Ok(()) };
+    for queued in store.series_progress(&video.meta_id)? {
+        if queued.up_next && queued.updated_at >= record.updated_at {
+            store.remove_progress(&queued.video)?;
+        }
+    }
+    match record.marked_from.filter(|at| *at > 0.0) {
+        Some(at) => store.save_progress_keep_time(Progress { position_secs: at, marked_from: None, ..record.clone() })?,
+        None => store.remove_progress(video)?,
+    }
+    if record.hidden {
+        store.hide_from_continue(&video.meta_id)?;
+    }
+    Ok(())
+}
+
 /// Progress at the end of the video (an unknown length counts as one second).
 fn watched(mut progress: Progress) -> Progress {
+    let before = progress.position_secs;
     progress.duration_secs = progress.duration_secs.max(1.0);
+    progress.marked_from = (before > 0.0 && before < progress.duration_secs).then_some(before);
     progress.position_secs = progress.duration_secs;
     progress.up_next = false;
     progress
@@ -249,6 +284,7 @@ fn card_progress(card: &RowItem) -> Progress {
         up_next: false,
         last_source: None,
         hidden: false,
+        marked_from: None,
     }
 }
 
