@@ -61,6 +61,10 @@ impl Controller {
         let state = SearchState::get(&self.ui);
         state.set_keys(self.search.keyboard.model(&crate::Icons::get(&self.ui)));
         state.set_rows(ModelRc::from(self.search.model.clone()));
+        if self.search.rows.is_empty() {
+            // Popular titles until something is typed.
+            self.run_search();
+        }
         self.push_search();
     }
 
@@ -86,7 +90,7 @@ impl Controller {
         state.set_focused_row(s.row as i32);
         state.set_searching(s.searching > 0);
         let has_results = s.rows.iter().any(RowCtl::is_navigable);
-        let hint = if s.query.trim().len() < 2 {
+        let hint = if s.query.trim().len() == 1 {
             "Type at least two letters to search movies and shows."
         } else if s.searching == 0 && !has_results {
             "No matches. Try a different spelling."
@@ -108,27 +112,28 @@ impl Controller {
         let query = self.search.query.trim().to_owned();
         self.search.generation += 1;
         let generation = self.search.generation;
-        if query.len() < 2 {
-            self.search.rows.clear();
-            self.search.row = 0;
-            self.search.keyboard_active = true; // nothing to focus below the keyboard
-            self.search.model.set_vec(Vec::<Row>::new());
-            self.search.searching = 0;
-            self.push_search();
-            return;
+        use joshflix_core::cinemeta::{CatalogId, CatalogQuery};
+        // Under two letters: popular titles, so the screen is never empty.
+        let popular = query.len() < 2;
+        let queries = if popular {
+            [
+                ("Popular movies", CatalogQuery::new(MediaKind::Movie, CatalogId::Top)),
+                ("Popular shows", CatalogQuery::new(MediaKind::Series, CatalogId::Top)),
+            ]
+        } else {
+            [("Movies", CatalogQuery::search(MediaKind::Movie, &query)), ("Shows", CatalogQuery::search(MediaKind::Series, &query))]
+        };
+        if popular {
+            self.search.keyboard_active = true;
         }
-        self.search.rows = vec![
-            RowCtl::new("Movies", RowSource::Catalog(joshflix_core::cinemeta::CatalogQuery::search(MediaKind::Movie, &query))),
-            RowCtl::new("Shows", RowSource::Catalog(joshflix_core::cinemeta::CatalogQuery::search(MediaKind::Series, &query))),
-        ];
+        self.search.rows = queries.iter().map(|(title, q)| RowCtl::new(*title, RowSource::Catalog(q.clone()))).collect();
         self.search.row = 0;
         self.search.model.set_vec(self.search.rows.iter().map(RowCtl::to_row).collect::<Vec<_>>());
         self.search.searching = 2;
         self.push_search();
-        for (index, kind) in [(0usize, MediaKind::Movie), (1, MediaKind::Series)] {
+        for (index, (_, q)) in queries.into_iter().enumerate() {
             let cinemeta = self.svc.cinemeta.clone();
-            let q = query.clone();
-            self.spawn(async move { cinemeta.search(kind, &q).await }, move |c, result| {
+            self.spawn(async move { cinemeta.catalog(&q).await }, move |c, result| {
                 if c.search.generation != generation {
                     return;
                 }

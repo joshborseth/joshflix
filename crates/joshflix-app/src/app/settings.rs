@@ -84,11 +84,13 @@ pub struct SettingsCtl {
     items: Vec<Item>,
     update_status: String,
     downloading: Option<watch::Sender<bool>>,
+    /// Last download percentage shown in a toast (outside Settings).
+    download_toast_pct: u32,
 }
 
 impl SettingsCtl {
     pub fn new() -> Self {
-        Self { section: 0, zone: 0, index: 0, items: Vec::new(), update_status: String::new(), downloading: None }
+        Self { section: 0, zone: 0, index: 0, items: Vec::new(), update_status: String::new(), downloading: None, download_toast_pct: 0 }
     }
 }
 
@@ -439,7 +441,15 @@ impl Controller {
         let dir = self.platform.cache_dir().join("updates");
         let progress = move |fraction: f32| {
             let _ = slint::invoke_from_event_loop(move || {
-                super::with_controller(|c| SettingsState::get(&c.ui).set_busy_progress(fraction));
+                super::with_controller(|c| {
+                    SettingsState::get(&c.ui).set_busy_progress(fraction);
+                    // Settings shows a bar; elsewhere a toast keeps the progress in view.
+                    let pct = (fraction * 100.0).clamp(0.0, 100.0) as u32;
+                    if c.screen != crate::Screen::Settings && c.screen != crate::Screen::Player && pct / 10 != c.settings_ctl.download_toast_pct / 10 {
+                        c.settings_ctl.download_toast_pct = pct;
+                        c.toast(&format!("Downloading the update… {pct}%"));
+                    }
+                });
             });
         };
         self.toast("Downloading the update…");
