@@ -67,7 +67,8 @@ export component DiscoverScreen inherits Rectangle {
         // Equal widths, so the picker can open under its chip.
         for filter[i] in root.filters: Chip {
             width: 110px;
-            label: filter + "  ▾";
+            label: filter;
+            dropdown: true;
             selected: true;
             focused: root.active && root.zone == 0 && i == root.filter-index;
         }

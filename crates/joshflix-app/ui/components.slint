@@ -196,16 +196,16 @@ export component WideCard inherits Rectangle {
                         }
                     }
                     if root.item.progress > 0: Rectangle {
-                        x: 10px;
-                        y: parent.height - 8px;
-                        width: parent.width - 20px;
-                        height: 3px;
-                        border-radius: 1.5px;
-                        background: #ffffff33;
+                        x: 6px;
+                        y: parent.height - 10px;
+                        width: parent.width - 12px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: #000000aa;
                         Rectangle {
                             x: 0;
                             width: parent.width * clamp(root.item.progress, 0, 1);
-                            border-radius: 1.5px;
+                            border-radius: 2px;
                             background: Theme.accent;
                         }
                     }
@@ -311,10 +311,13 @@ export component PillButton inherits Rectangle {
     in property <bool> focused;
     in property <bool> primary: false;
     in property <bool> compact: false;
+    // A fixed width with the label on the left (action sheets); 0 = fit the label.
+    in property <length> fill-width: 0px;
+    property <bool> stretch: fill-width > 0px;
     height: compact ? 30px : 36px;
-    width: content.preferred-width + (compact ? 24px : 32px);
-    transform-scale: focused ? 1.05 : 1.0;
-    transform-origin: { x: self.width / 2, y: self.height / 2 };
+    width: stretch ? fill-width : content.preferred-width + (compact ? 24px : 32px);
+    transform-scale: focused ? (stretch ? 1.02 : 1.05) : 1.0;
+    transform-origin: { x: stretch ? 0px : self.width / 2, y: self.height / 2 };
     animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 
     PillGlow {
@@ -331,7 +334,8 @@ export component PillButton inherits Rectangle {
     }
 
     content := HorizontalLayout {
-        alignment: center;
+        alignment: root.stretch ? start : center;
+        padding-left: root.stretch ? 16px : 0px;
         spacing: 8px;
         if root.has-icon: Image {
             source: root.icon;
@@ -355,18 +359,32 @@ export component Chip inherits Rectangle {
     in property <string> label;
     in property <bool> focused;
     in property <bool> selected;
+    // A ▾ icon: the chip opens a list.
+    in property <bool> dropdown;
     height: 28px;
-    width: chip-text.preferred-width + 24px;
+    width: chip-row.preferred-width + 24px;
     border-radius: 14px;
     background: focused ? Theme.accent : (selected ? Theme.surface-3 : transparent);
     border-width: (focused || selected) ? 0px : 1px;
     border-color: Theme.border;
     animate background { duration: Theme.fast; }
-    chip-text := Text {
-        text: root.label;
-        color: (root.focused || root.selected) ? Theme.text : Theme.text-muted;
-        font-size: Theme.text-sm;
-        font-weight: 600;
+    chip-row := HorizontalLayout {
+        alignment: center;
+        spacing: 6px;
+        Text {
+            text: root.label;
+            color: (root.focused || root.selected) ? Theme.text : Theme.text-muted;
+            font-size: Theme.text-sm;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+        if root.dropdown: Image {
+            source: Icons.chevron-down;
+            width: 11px;
+            height: 11px;
+            y: (parent.height - self.height) / 2;
+            colorize: (root.focused || root.selected) ? Theme.text : Theme.text-muted;
+        }
     }
 }
 

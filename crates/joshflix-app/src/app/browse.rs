@@ -163,6 +163,8 @@ pub struct RowCtl {
     pub empty_text: String,
     /// The network answered for this row (a saved copy mustn't replace it).
     pub fresh: bool,
+    /// A network request for this row is in flight.
+    pub fetching: bool,
 }
 
 impl RowCtl {
@@ -178,18 +180,31 @@ impl RowCtl {
             wide,
             empty_text: String::new(),
             fresh: false,
+            fetching: false,
         }
     }
 
     pub fn set_items(&mut self, items: Vec<RowItem>) {
         // Same cards as shown (Continue Watching and My List reload on every
         // visit): keep the model, so the row's cards and textures survive.
-        let same = self.items.len() == items.len()
-            && self.items.iter().zip(&items).all(|(a, b)| {
-                a.id == b.id && a.subtitle == b.subtitle && a.progress == b.progress && a.badge == b.badge && a.image == b.image
-            });
-        if !same || self.model.row_count() != items.len() {
+        let same_card = |a: &RowItem, b: &RowItem| {
+            a.id == b.id && a.subtitle == b.subtitle && a.progress == b.progress && a.badge == b.badge && a.image == b.image
+        };
+        if self.items.len() == items.len() && self.model.row_count() == items.len() {
+            // Patch changed cards only (a fresh catalog replacing the saved
+            // one): a reset would rebuild every card and re-upload textures.
+            for (i, (old, new)) in self.items.iter().zip(&items).enumerate() {
+                if !same_card(old, new) {
+                    self.model.set_row_data(i, new.to_poster());
+                }
+            }
+        } else {
             self.model.set_vec(items.iter().map(RowItem::to_poster).collect::<Vec<_>>());
+        }
+        // Keep focus on the same title when the list moved under it.
+        let focused_id = self.items.get(self.focused).map(|i| i.id.clone());
+        if let Some(at) = focused_id.and_then(|id| items.iter().position(|i| i.id == id)) {
+            self.focused = at;
         }
         self.items = items;
         self.focused = self.focused.min(self.items.len().saturating_sub(1));
@@ -333,8 +348,9 @@ impl Controller {
             // catalog rows that failed (no network at startup) try again.
             for row in 0..self.browse[index].rows.len() {
                 let r = &mut self.browse[index].rows[row];
-                let failed = matches!(r.source, RowSource::Catalog(_)) && r.items.is_empty() && !r.loading;
-                if failed {
+                // Failed, or only showing last session's copy: ask again.
+                let failed = matches!(r.source, RowSource::Catalog(_)) && !r.fetching && (r.items.is_empty() || !r.fresh);
+                if failed && r.items.is_empty() {
                     r.loading = true;
                     r.empty_text.clear();
                 }
@@ -416,6 +432,7 @@ impl Controller {
                 // Last session's answer first (a cold start paints at once),
                 // then the fresh one replaces it.
                 self.browse[browse].rows[row].fresh = false;
+                self.browse[browse].rows[row].fetching = true;
                 let cinemeta = self.svc.cinemeta.clone();
                 let cached_query = query.clone();
                 self.spawn(async move { cinemeta.cached_catalog(&cached_query).await }, move |c, cached| {
@@ -431,9 +448,10 @@ impl Controller {
                     if c.browse[browse].generation != generation {
                         return;
                     }
-                    c.browse[browse].rows[row].fresh = true;
+                    c.browse[browse].rows[row].fetching = false;
                     match result {
                         Ok(metas) => {
+                            c.browse[browse].rows[row].fresh = true;
                             let items = metas.iter().take(40).map(RowItem::from_meta).collect();
                             c.fill_row(browse, row, items);
                         }
@@ -533,6 +551,10 @@ impl Controller {
             rating: shared(&hero.rating),
             description: shared(&hero.description),
         });
+        if self.browse[browse].hero_backdrop != hero.backdrop {
+            // Backdrops still queued for titles passed on the way are dropped.
+            self.images.backdrops_moved_on();
+        }
         self.browse[browse].hero_logo = hero.logo.clone();
         self.browse[browse].hero_backdrop = hero.backdrop.clone();
         if let Some(url) = hero.backdrop.clone()
@@ -682,16 +704,13 @@ impl Controller {
                 if at_top {
                     return self.focus_rail();
                 }
-                let row_index = b.row;
-                if let Some(row) = b.rows.get_mut(row_index) {
-                    row.focused = 0;
-                    let data = row.to_row();
-                    b.model.set_row_data(row_index, data);
-                }
-                if let Some(row) = b.rows.get_mut(first) {
-                    row.focused = 0;
-                    let data = row.to_row();
-                    b.model.set_row_data(first, data);
+                // Every row starts from its first card again.
+                for (i, row) in b.rows.iter_mut().enumerate() {
+                    if row.focused != 0 {
+                        row.focused = 0;
+                        let data = row.to_row();
+                        b.model.set_row_data(i, data);
+                    }
                 }
                 b.row = first;
                 self.push_browse_scroll(browse);

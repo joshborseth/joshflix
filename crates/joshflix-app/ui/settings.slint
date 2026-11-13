@@ -5,7 +5,8 @@ import { ProgressBar } from "components.slint";
 component SettingRow inherits Rectangle {
     in property <SettingItem> item;
     in property <bool> focused;
-    // The focused row shows its whole hint (some explain when a change applies).
+    // Hints wrap in full (some explain when a change applies); the height
+    // doesn't depend on focus, so rows never shift while moving through them.
     height: max(item.hint != "" ? 58px : 44px, text-box.preferred-height + 22px);
     // Room for the control on the right, by kind.
     property <length> control-w: item.kind == "toggle" ? 56px : item.kind == "choice" ? 150px
@@ -32,8 +33,7 @@ component SettingRow inherits Rectangle {
             text: root.item.hint;
             color: root.focused ? Theme.text-muted : Theme.text-faint;
             font-size: Theme.text-sm;
-            wrap: root.focused ? word-wrap : no-wrap;
-            overflow: elide;
+            wrap: word-wrap;
         }
     }
 
@@ -61,12 +61,13 @@ component SettingRow inherits Rectangle {
         width: self.preferred-width;
         height: root.height;
         spacing: 10px;
-        Text {
-            text: "‹";
-            color: root.focused ? Theme.accent-light : Theme.text-faint;
-            font-size: Theme.text-lg;
-            font-weight: 700;
-            vertical-alignment: center;
+        Image {
+            source: Icons.chevron-right;
+            transform-rotation: 180deg;
+            width: 13px;
+            height: 13px;
+            y: (parent.height - self.height) / 2;
+            colorize: root.focused ? Theme.accent-light : Theme.text-faint;
         }
         Text {
             text: root.item.value;
@@ -75,17 +76,24 @@ component SettingRow inherits Rectangle {
             font-weight: 600;
             vertical-alignment: center;
         }
-        Text {
-            text: "›";
-            color: root.focused ? Theme.accent-light : Theme.text-faint;
-            font-size: Theme.text-lg;
-            font-weight: 700;
-            vertical-alignment: center;
+        Image {
+            source: Icons.chevron-right;
+            width: 13px;
+            height: 13px;
+            y: (parent.height - self.height) / 2;
+            colorize: root.focused ? Theme.accent-light : Theme.text-faint;
         }
     }
-    if root.item.kind == "info" || root.item.kind == "action": Text {
+    if root.item.kind == "action" && root.item.value == "": Image {
+        x: root.width - 16px - self.width;
+        width: 13px;
+        height: 13px;
+        source: Icons.chevron-right;
+        colorize: Theme.accent-light;
+    }
+    if root.item.kind == "info" || (root.item.kind == "action" && root.item.value != ""): Text {
         x: root.width - 16px - self.preferred-width;
-        text: root.item.kind == "action" && root.item.value == "" ? "›" : root.item.value;
+        text: root.item.value;
         color: root.item.kind == "action" ? Theme.accent-light : Theme.text-muted;
         font-size: Theme.text-md;
         font-weight: 600;

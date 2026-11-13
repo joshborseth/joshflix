@@ -252,6 +252,7 @@ component DialogBox inherits Rectangle {
             if Dialog.sheet: VerticalLayout {
                 spacing: 8px;
                 for button[i] in Dialog.buttons: PillButton {
+                    fill-width: 316px;  // the sheet's 360px less its padding
                     label: button.label;
                     icon: button.icon;
                     primary: i == Dialog.index;
@@ -518,9 +519,10 @@ export component AppWindow inherits Window {
 
     if Dialog.open: DialogBox { }
 
+    // Top right: at the bottom it covered the row or episode just acted on.
     Toast {
         x: root.width - self.width - Theme.safe-x;
-        y: root.height - self.height - Theme.safe-y;
+        y: Theme.safe-y;
         message: AppState.toast;
         shown: AppState.toast-shown;
     }

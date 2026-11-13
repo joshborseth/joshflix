@@ -128,6 +128,8 @@ pub struct PlayerCtl {
     subtitle_user_choice: bool,
     /// Back hid the controls while paused.
     overlay_dismissed: bool,
+    /// The subtitle track (or none) to pick again once this reopened stream lists it.
+    restore_subtitle: Option<Option<i64>>,
 }
 
 impl PlayerCtl {
@@ -229,6 +231,7 @@ impl Controller {
             reconnect_on_return: false,
             subtitle_user_choice: false,
             overlay_dismissed: false,
+            restore_subtitle: None,
         });
         let (title, subtitle) = super::video_title(&request.context.name, &request.video, request.context.episode_title.as_deref());
         let state = PlayerState::get(&self.ui);
@@ -364,7 +367,7 @@ impl Controller {
                     p.error = None;
                 }
                 p.video_shown = true;
-                p.subtitle_choice_pending = true;
+                p.subtitle_choice_pending = !p.subtitle_user_choice;
                 p.loaded_at = Some(Instant::now());
                 self.set_screen(Screen::Player);
             }
@@ -429,6 +432,18 @@ impl Controller {
             }
             PlayerEvent::Buffering(state) => p.buffering = state,
             PlayerEvent::TracksChanged => {
+                // After a reconnect: the subtitle the user had picked.
+                if let Some(wanted) = p.restore_subtitle
+                    && let Some(player) = self.video.player()
+                {
+                    let tracks = player.tracks();
+                    if wanted.is_none_or(|id| tracks.iter().any(|t| t.kind == TrackKind::Subtitle && t.id == id)) {
+                        let _ = player.select_track(TrackKind::Subtitle, wanted);
+                        if let Some(p) = self.player.as_mut() {
+                            p.restore_subtitle = None;
+                        }
+                    }
+                }
                 self.choose_subtitle();
                 self.refresh_subtitle_state();
             }
@@ -442,7 +457,9 @@ impl Controller {
                 let near_end = p.duration > 0.0
                     && (p.position >= p.duration * joshflix_core::store::WATCHED_FRACTION || p.duration - p.position < 90.0);
                 if !near_end {
-                    if p.reconnects < MAX_RECONNECTS {
+                    // Only a stream that played counts as dropped (a link that
+                    // ends at once is broken, and reopening it won't help).
+                    if p.started && p.reconnects < MAX_RECONNECTS {
                         self.reconnect("the stream ended early");
                         return;
                     }
@@ -460,6 +477,16 @@ impl Controller {
             }
             PlayerEvent::Ended(EndReason::Error(message)) => {
                 tracing::warn!("playback failed: {message} (last mpv error: {:?})", p.last_mpv_error);
+                // A drop in the credits finishes the episode (autoplay goes on).
+                let near_end = p.duration > 0.0
+                    && (p.position >= p.duration * joshflix_core::store::WATCHED_FRACTION || p.duration - p.position < 90.0);
+                if p.started && near_end {
+                    if !p.finished {
+                        p.finished = true;
+                        self.on_finished();
+                    }
+                    return;
+                }
                 // It had played, so the link works: most likely the connection dropped.
                 if p.started && p.reconnects < MAX_RECONNECTS {
                     self.reconnect("playback failed");
@@ -692,6 +719,10 @@ impl Controller {
             } else {
                 p.picture_since = None;
             }
+        }
+        // Minutes of steady playback since the last reopen: a new budget.
+        if p.reconnects > 0 && p.started && p.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(180)) {
+            p.reconnects = 0;
         }
         if p.drops_logged_at.elapsed() >= DROPS_LOG_EVERY {
             if p.started && !p.paused && p.pending_next.is_none() && p.drops != p.drops_logged {
@@ -1067,6 +1098,11 @@ impl Controller {
         let at = p.seek_target.unwrap_or(p.position);
         request.resume_at = Some(at).filter(|s| *s > 1.0).or(request.resume_at);
         let (source, url, next) = (p.source.clone(), p.url.clone(), (p.next.dismissed, p.next.shown));
+        let user_subtitle = p.subtitle_user_choice.then(|| {
+            self.video
+                .player()
+                .and_then(|pl| pl.tracks().into_iter().find(|t| t.kind == TrackKind::Subtitle && t.selected).map(|t| t.id))
+        });
         tracing::warn!("{why}; reopening the stream at {at:.0} s (attempt {attempt} of {MAX_RECONNECTS})");
         self.save_progress(false);
         // Keep the session's screen-on and frame-rate state: no stop_playback,
@@ -1076,6 +1112,10 @@ impl Controller {
         if let Some(p) = self.player.as_mut() {
             p.reconnects = attempt;
             (p.next.dismissed, p.next.shown) = next;
+            if let Some(subtitle) = user_subtitle {
+                p.subtitle_user_choice = true;
+                p.restore_subtitle = Some(subtitle);
+            }
         }
         self.push_player();
     }

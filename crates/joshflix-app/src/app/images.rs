@@ -71,10 +71,13 @@ pub struct ImageCache {
     net: Arc<Semaphore>,
     decode_cards: Arc<Semaphore>,
     decode_large: Arc<Semaphore>,
+    /// Bumped when the browse hero moves on (see `backdrops_moved_on`).
+    backdrop_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// Decoded artwork kept for reuse, by bytes (a backdrop is 5–8 MB, a poster 0.3 MB).
 const BUDGET_BYTES: usize = 128 * 1024 * 1024;
+const MAX_BACKDROPS: usize = 8;
 const RETRY_FAILED: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn image_bytes(image: &Image) -> usize {
@@ -84,7 +87,8 @@ fn image_bytes(image: &Image) -> usize {
 
 /// Identifies an episode card across seasons ("E5" repeats in every season).
 pub fn episode_key(card: &EpisodeCard) -> String {
-    format!("{}|{}", card.label, card.title)
+    // The air date tells seasons apart when titles are generic ("Episode 5").
+    format!("{}|{}|{}", card.label, card.title, card.aired)
 }
 
 fn cache_key(url: &str, kind: ImageKind, scale: f32) -> String {
@@ -109,6 +113,7 @@ impl ImageCache {
             // queue behind a 1080p backdrop for a title already scrolled past.
             decode_cards: Arc::new(Semaphore::new(2)),
             decode_large: Arc::new(Semaphore::new(1)),
+            backdrop_generation: Arc::new(std::sync::atomic::AtomicU64::new(0)),
         }
     }
 
@@ -153,25 +158,40 @@ impl ImageCache {
         let radius = kind.card_radius().map(|r| r * self.scale);
         let loader = self.loader.clone();
         let net = self.net.clone();
-        let decode = if matches!(kind, ImageKind::Backdrop | ImageKind::Logo) { self.decode_large.clone() } else { self.decode_cards.clone() };
+        // Logos are small and the hero shows no title until its logo lands.
+        let decode = if kind == ImageKind::Backdrop { self.decode_large.clone() } else { self.decode_cards.clone() };
+        // A backdrop whose hero moved on before its turn to decode is dropped.
+        let wanted = (kind == ImageKind::Backdrop).then(|| (self.backdrop_generation.clone(), self.backdrop_generation.load(std::sync::atomic::Ordering::Relaxed)));
         let url = url.to_owned();
         self.rt.spawn(async move {
-            let result: Option<Pixels> = async {
+            // Err(true): no longer wanted (not a failure); Err(false): failed.
+            let result: Result<Pixels, bool> = async {
                 let bytes = {
-                    let _permit = net.acquire().await.ok()?;
-                    loader.fetch(&url).await.ok()?
+                    let _permit = net.acquire().await.map_err(|_| false)?;
+                    loader.fetch(&url).await.map_err(|_| false)?
                 };
-                let _permit = decode.acquire().await.ok()?;
+                let _permit = decode.acquire().await.map_err(|_| false)?;
+                if let Some((current, at)) = &wanted
+                    && current.load(std::sync::atomic::Ordering::Relaxed) != *at
+                {
+                    return Err(true);
+                }
                 let started = std::time::Instant::now();
-                let decoded = tokio::task::spawn_blocking(move || match radius {
-                    Some(radius) => joshflix_core::images::decode_card(&bytes, w, h, radius),
-                    None => joshflix_core::images::decode(&bytes, w, h),
+                // The pixel buffer is built on the blocking thread too, not on a runtime worker.
+                let pixels = tokio::task::spawn_blocking(move || {
+                    let decoded = match radius {
+                        Some(radius) => joshflix_core::images::decode_card(&bytes, w, h, radius),
+                        None => joshflix_core::images::decode(&bytes, w, h),
+                    }
+                    .ok()?;
+                    Some(SharedPixelBuffer::clone_from_slice(&decoded.rgba, decoded.width, decoded.height))
                 })
                 .await
-                .ok()?
-                .ok()?;
+                .ok()
+                .flatten()
+                .ok_or(false)?;
                 crate::perf::image_loaded(started.elapsed().as_nanos() as u64);
-                Some(SharedPixelBuffer::clone_from_slice(&decoded.rgba, decoded.width, decoded.height))
+                Ok(pixels)
             }
             .await;
             let _ = slint::invoke_from_event_loop(move || {
@@ -179,6 +199,12 @@ impl ImageCache {
             });
         });
         None
+    }
+
+    /// The browse hero moved on: backdrops queued for earlier heroes are dropped
+    /// when their turn to decode comes (the one asked for next is kept).
+    pub fn backdrops_moved_on(&self) {
+        self.backdrop_generation.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Start loading an image nobody shows yet, so it's ready when focus arrives.
@@ -192,6 +218,17 @@ impl ImageCache {
     }
 
     fn insert(&mut self, key: String, image: Image) {
+        // Backdrops are 5–8 MB each: keep only a few, so they can't push
+        // hundreds of posters out of the budget.
+        if key.starts_with("Backdrop@") {
+            let backdrops: Vec<String> = self.order.iter().filter(|k| k.starts_with("Backdrop@")).cloned().collect();
+            for old in backdrops.iter().take(backdrops.len().saturating_sub(MAX_BACKDROPS - 1)) {
+                if let Some(evicted) = self.cache.remove(old) {
+                    self.bytes = self.bytes.saturating_sub(image_bytes(&evicted));
+                }
+                self.order.retain(|k| k != old);
+            }
+        }
         let size = image_bytes(&image);
         while self.bytes + size > BUDGET_BYTES
             && let Some(old) = self.order.pop_front()
@@ -216,16 +253,21 @@ impl ImageCache {
 }
 
 impl Controller {
-    fn image_loaded(&mut self, key: String, url: String, kind: ImageKind, pixels: Option<Pixels>) {
+    fn image_loaded(&mut self, key: String, url: String, kind: ImageKind, pixels: Result<Pixels, bool>) {
         self.images.inflight.remove(&key);
         let waiters = self.images.waiters.remove(&key).unwrap_or_default();
-        let Some(pixels) = pixels else {
-            self.images.failed.insert(key, std::time::Instant::now());
-            if kind == ImageKind::Logo && waiters.iter().any(|w| matches!(w, ImageSlot::Named)) {
-                self.browse_logo_failed(&url);
-                self.start_logo_failed(&url);
+        let pixels = match pixels {
+            Ok(pixels) => pixels,
+            // Dropped as stale: asking again later loads it.
+            Err(true) => return,
+            Err(false) => {
+                self.images.failed.insert(key, std::time::Instant::now());
+                if kind == ImageKind::Logo && waiters.iter().any(|w| matches!(w, ImageSlot::Named)) {
+                    self.browse_logo_failed(&url);
+                    self.start_logo_failed(&url);
+                }
+                return;
             }
-            return;
         };
         let image = Image::from_rgba8(pixels);
         self.images.insert(key, image.clone());
