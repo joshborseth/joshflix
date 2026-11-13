@@ -52,6 +52,9 @@ pub struct Settings {
     pub video_compat_mode: Option<bool>,
     /// Last update version the user dismissed.
     pub dismissed_update_code: Option<u64>,
+    /// The audio language last picked in the player (mpv `alang`), kept for
+    /// the next episode and title.
+    pub audio_language: Option<String>,
 }
 
 impl Default for Settings {
@@ -70,6 +73,7 @@ impl Default for Settings {
             autoplay_next: true,
             video_compat_mode: None,
             dismissed_update_code: None,
+            audio_language: None,
         }
     }
 }

@@ -8,6 +8,9 @@ export component PosterGrid inherits Rectangle {
     in property <int> columns: 6;
     in property <int> focused-index: -1;
     in property <bool> centered: false;
+    // Room inside the clip for the focus glow of the first column and row.
+    in property <length> pad-x: 24px;
+    in property <length> pad-y: 8px;
     property <length> cell-w: Theme.poster-w + 18px;
     property <length> cell-h: Theme.poster-h + 52px;
     property <int> focused-line: root.focused-index < 0 ? 0 : floor(root.focused-index / root.columns);
@@ -15,8 +18,8 @@ export component PosterGrid inherits Rectangle {
     clip: true;
 
     Rectangle {
-        x: root.centered ? (root.width - root.grid-w) / 2 : 0px;
-        y: 8px - max(0, root.focused-line - 1) * root.cell-h;
+        x: root.pad-x + (root.centered ? (root.width - root.pad-x - root.grid-w) / 2 : 0px);
+        y: root.pad-y + 8px - max(0, root.focused-line - 1) * root.cell-h;
         width: root.grid-w;
         animate y { duration: Theme.med; easing: ease-out-quart; }
         for item[i] in root.items: PosterCard {
@@ -61,7 +64,9 @@ export component DiscoverScreen inherits Rectangle {
         height: 28px;
         spacing: 10px;
         alignment: start;
+        // Equal widths, so the picker can open under its chip.
         for filter[i] in root.filters: Chip {
+            width: 110px;
             label: filter + "  ▾";
             selected: true;
             focused: root.active && root.zone == 0 && i == root.filter-index;
@@ -87,8 +92,8 @@ export component DiscoverScreen inherits Rectangle {
         size: 20px;
     }
     PosterGrid {
-        x: root.left-pad - 6px;
-        y: Theme.safe-y + 84px;
+        x: root.left-pad - 6px - self.pad-x;
+        y: Theme.safe-y + 84px - self.pad-y;
         width: root.width - self.x - 12px;
         height: root.height - self.y;
         items: root.items;
@@ -123,13 +128,19 @@ export component MyListScreen inherits Rectangle {
         font-size: Theme.text-2xl;
         font-weight: 900;
     }
-    if root.has-continue: PosterRow {
-        y: Theme.safe-y + 44px - (root.zone == 1 ? 210px : 0px);
-        data: root.continue-row;
-        left-pad: root.left-pad;
-        active: root.active && root.zone == 0;
-        opacity: root.zone == 1 ? 0 : 1;
-        animate y, opacity { duration: Theme.med; easing: ease-out-quart; }
+    // Slides up out of a plain clip under the title (no fade: an opacity
+    // animation renders the whole row offscreen every frame).
+    if root.has-continue: Rectangle {
+        y: Theme.safe-y + 36px;
+        height: root.height - self.y;
+        clip: true;
+        PosterRow {
+            y: 8px - (root.zone == 1 ? 260px : 0px);
+            data: root.continue-row;
+            left-pad: root.left-pad;
+            active: root.active && root.zone == 0;
+            animate y { duration: Theme.med; easing: ease-out-quart; }
+        }
     }
     if root.items.length == 0: VerticalLayout {
         x: root.left-pad;
@@ -161,13 +172,12 @@ export component MyListScreen inherits Rectangle {
         animate y { duration: Theme.med; easing: ease-out-quart; }
     }
     PosterGrid {
-        x: root.left-pad - 6px;
-        y: root.has-continue && root.zone == 0 ? Theme.safe-y + 278px : Theme.safe-y + 70px;
-        width: root.width - root.left-pad - Theme.safe-x;
+        x: root.left-pad - 6px - self.pad-x;
+        y: (root.has-continue && root.zone == 0 ? Theme.safe-y + 278px : Theme.safe-y + 70px) - self.pad-y;
+        width: root.width - self.x - 12px;
         height: root.height - self.y;
         items: root.items;
         columns: root.columns;
-        centered: true;
         focused-index: root.active && root.zone == 1 ? root.grid-index : -1;
         animate y { duration: Theme.med; easing: ease-out-quart; }
     }

@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use joshflix_core::MediaKind;
 use joshflix_core::cinemeta::{CatalogId, CatalogQuery, GENRES, MetaPreview};
-use slint::{Global, ModelRc, VecModel};
+use slint::{Global, Model, ModelRc, VecModel};
 
 use super::browse::{RowCtl, RowItem, RowSource};
 use super::{Controller, ImageKind, Key, shared};
@@ -29,6 +29,14 @@ pub struct DiscoverCtl {
     loaded: bool,
     /// Shown when the grid is empty: no matches, or why loading failed.
     message: String,
+    /// The filter chips' labels (one model, so pushes don't rebuild the chips).
+    filters_model: Rc<VecModel<slint::SharedString>>,
+}
+
+impl DiscoverCtl {
+    pub(super) fn focused_item(&self) -> Option<&RowItem> {
+        if self.zone == 1 && self.picker.is_none() { self.items.get(self.index) } else { None }
+    }
 }
 
 impl DiscoverCtl {
@@ -48,6 +56,7 @@ impl DiscoverCtl {
             generation: 0,
             loaded: false,
             message: String::new(),
+            filters_model: Rc::new(VecModel::default()),
         }
     }
 
@@ -117,6 +126,10 @@ pub struct MyListCtl {
 }
 
 impl MyListCtl {
+    pub(super) fn focused_item(&self) -> Option<&RowItem> {
+        if self.zone == 0 { self.cw.items.get(self.cw.focused) } else { self.items.get(self.index) }
+    }
+
     pub fn new() -> Self {
         Self {
             cw: RowCtl::new("Continue Watching", RowSource::ContinueWatching),
@@ -201,7 +214,10 @@ impl Controller {
         let d = &self.discover;
         let state = DiscoverState::get(&self.ui);
         let labels: Vec<slint::SharedString> = d.filter_labels().iter().map(shared).collect();
-        state.set_filters(ModelRc::new(VecModel::from(labels)));
+        if d.filters_model.iter().ne(labels.iter().cloned()) {
+            d.filters_model.set_vec(labels);
+        }
+        state.set_filters(ModelRc::from(d.filters_model.clone()));
         state.set_loading(d.loading);
         state.set_message(shared(&d.message));
         state.set_zone(d.zone);

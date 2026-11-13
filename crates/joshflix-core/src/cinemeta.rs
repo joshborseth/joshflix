@@ -146,6 +146,14 @@ pub struct Episode {
     pub released: Option<String>,
 }
 
+impl Episode {
+    /// Whether it has aired by `today` (`YYYY-MM-DD`). Episodes without a
+    /// date count as aired.
+    pub fn is_released(&self, today: &str) -> bool {
+        self.released.as_deref().and_then(|r| r.get(..10)).is_none_or(|day| day <= today)
+    }
+}
+
 /// Full details for a title.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct MetaDetail {
@@ -172,7 +180,13 @@ impl MetaDetail {
         self.episodes.iter().filter(move |e| e.season == season)
     }
 
+    /// The first regular episode, to watch a finished series again.
+    pub fn first_episode(&self) -> Option<&Episode> {
+        self.episodes.iter().find(|e| e.season != 0)
+    }
+
     /// The episode after `(season, episode)` in display order, skipping specials.
+    /// It may not have aired yet: check [`Episode::is_released`].
     pub fn next_episode(&self, season: u32, episode: u32) -> Option<&Episode> {
         let index = self
             .episodes
@@ -197,6 +211,8 @@ impl MetaDetail {
 pub struct Cinemeta {
     http: Http,
     base: String,
+    /// Where browse catalogs are kept, so a cold start can show them at once.
+    cache_dir: Option<std::path::PathBuf>,
 }
 
 impl Cinemeta {
@@ -208,7 +224,32 @@ impl Cinemeta {
         Self {
             http,
             base: base.into().trim_end_matches('/').to_owned(),
+            cache_dir: None,
         }
+    }
+
+    /// Keep each catalog's last answer in `dir` (see [`Cinemeta::cached_catalog`]).
+    pub fn with_cache_dir(mut self, dir: std::path::PathBuf) -> Self {
+        let _ = std::fs::create_dir_all(&dir);
+        self.cache_dir = Some(dir);
+        self
+    }
+
+    fn cache_path(&self, query: &CatalogQuery) -> Option<std::path::PathBuf> {
+        use sha2::{Digest, Sha256};
+        // Searches change with every letter: not worth keeping.
+        if query.search.is_some() {
+            return None;
+        }
+        let digest = Sha256::digest(query.path().as_bytes());
+        let name: String = digest[..12].iter().map(|b| format!("{b:02x}")).collect();
+        Some(self.cache_dir.as_ref()?.join(format!("{name}.json")))
+    }
+
+    /// The catalog's last answer from disk, if any (shown while the fresh one loads).
+    pub async fn cached_catalog(&self, query: &CatalogQuery) -> Option<Vec<MetaPreview>> {
+        let bytes = tokio::fs::read(self.cache_path(query)?).await.ok()?;
+        serde_json::from_slice(&bytes).ok()
     }
 
     /// One catalog page (Cinemeta pages hold up to 50–100 items).
@@ -216,12 +257,21 @@ impl Cinemeta {
         let url = format!("{}{}", self.base, query.path());
         let page: RawCatalog = self.http.get_json(SERVICE, &url).await?;
         let mut seen = std::collections::HashSet::new();
-        Ok(page
+        let metas: Vec<MetaPreview> = page
             .metas
             .into_iter()
             .filter_map(|raw| raw.into_preview(query.kind))
             .filter(|meta| seen.insert(meta.id.clone()))
-            .collect())
+            .collect();
+        if let Some(path) = self.cache_path(query)
+            && let Ok(json) = serde_json::to_vec(&metas)
+        {
+            let tmp = path.with_extension("tmp");
+            if tokio::fs::write(&tmp, json).await.is_ok() {
+                let _ = tokio::fs::rename(&tmp, &path).await;
+            }
+        }
+        Ok(metas)
     }
 
     /// Search movies or series by title.
@@ -423,6 +473,22 @@ fn lenient_strings<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn episodes_air_by_date() {
+        let episode = |released: Option<&str>| Episode {
+            id: "tt1:1:1".into(),
+            season: 1,
+            episode: 1,
+            title: String::new(),
+            overview: None,
+            thumbnail: None,
+            released: released.map(str::to_owned),
+        };
+        assert!(episode(Some("2026-11-13T00:00:00.000Z")).is_released("2026-11-13"));
+        assert!(!episode(Some("2026-11-20T00:00:00.000Z")).is_released("2026-11-13"));
+        assert!(episode(None).is_released("2026-11-13"), "no date counts as aired");
+    }
 
     #[test]
     fn builds_catalog_paths() {

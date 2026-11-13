@@ -8,6 +8,7 @@ use joshflix_core::cinemeta::metahub_size;
 use slint::{Global, Image};
 
 use super::detail::PlayRequest;
+use super::browse::BACKDROP_SIZE;
 use super::{Controller, ImageKind, ImageSlot, shared};
 use crate::{StartState, format};
 
@@ -87,6 +88,7 @@ impl Controller {
             return None;
         }
         let (status, step, progress) = match (p.video_shown, p.buffering) {
+            (false, _) if p.reconnecting() => ("Reconnecting…".to_owned(), 1, -1.0),
             (false, _) => ("Opening the video…".to_owned(), 1, -1.0),
             (true, Some(pct)) if pct > 0 => (format!("Buffering {pct}%"), 2, pct as f32 / 100.0),
             (true, _) => ("Starting playback…".to_owned(), 2, -1.0),
@@ -114,7 +116,7 @@ impl Controller {
             .context
             .background
             .as_deref()
-            .map(|b| metahub_size(b, "large"))
+            .map(|b| metahub_size(b, BACKDROP_SIZE))
             .or_else(|| request.context.thumbnail.clone());
         let logo = request.context.logo.clone();
         self.start.backdrop_url = backdrop.clone();

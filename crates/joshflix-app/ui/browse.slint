@@ -62,10 +62,10 @@ export component BrowseScreen inherits Rectangle {
         show-b: root.show-b;
     }
 
-    // Hero text.
+    // Hero text, anchored just above the rows it describes.
     VerticalLayout {
         x: root.left-pad;
-        y: Theme.safe-y + 22px;
+        y: max(Theme.safe-y + 22px, root.hero-h - self.preferred-height - 34px);
         width: min(400px, root.width * 0.42);
         spacing: 8px;
         alignment: start;
@@ -128,7 +128,7 @@ export component BrowseScreen inherits Rectangle {
             font-size: Theme.text-md;
             wrap: word-wrap;
             overflow: elide;
-            height: 44px;
+            height: 48px;
         }
     }
 

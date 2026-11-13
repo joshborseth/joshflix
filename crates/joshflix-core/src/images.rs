@@ -54,7 +54,8 @@ impl ImageLoader {
             .map_err(|e| CoreError::Invalid(e.to_string()))?
     }
 
-    async fn fetch(&self, url: &str) -> Result<Vec<u8>> {
+    /// The raw file: from the disk cache, or downloaded (and cached).
+    pub async fn fetch(&self, url: &str) -> Result<Vec<u8>> {
         let path = self.cache_dir.join(cache_name(url));
         let bytes = match tokio::fs::read(&path).await {
             Ok(bytes) if !bytes.is_empty() => bytes,
@@ -102,11 +103,14 @@ fn cache_name(url: &str) -> String {
     digest[..16].iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// Decode and downscale. Never upscales.
+/// Decode and downscale. Never upscales. A source at most a third larger
+/// than the target keeps its size: the GPU scales it for free, and a full
+/// resize of a 1080p backdrop costs a TV CPU hundreds of milliseconds.
 pub fn decode(bytes: &[u8], max_w: u32, max_h: u32) -> Result<Decoded> {
     let image = image::load_from_memory(bytes).map_err(|e| CoreError::decode(SERVICE, e))?;
     let (w, h) = (image.width(), image.height());
-    let image = if w > max_w || h > max_h {
+    let close_enough = u64::from(w) * 3 <= u64::from(max_w) * 4 && u64::from(h) * 3 <= u64::from(max_h) * 4;
+    let image = if (w > max_w || h > max_h) && !close_enough {
         // Triangle is a good speed/quality balance for ~2–4x downscales.
         image.resize(max_w, max_h, FilterType::Triangle)
     } else {
@@ -178,6 +182,19 @@ mod tests {
         assert_eq!((decoded.width, decoded.height), (133, 200));
         assert_eq!(decoded.rgba.len(), 133 * 200 * 4);
         assert_eq!(cache_name("a").len(), 32);
+    }
+
+    #[test]
+    fn close_sizes_skip_the_resize() {
+        let mut png = Vec::new();
+        let img = image::RgbaImage::from_pixel(1920, 1080, image::Rgba([10, 20, 30, 255]));
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .unwrap();
+        // 1920 is within a third of 1520: the GPU scales it.
+        assert_eq!(decode(&png, 1520, 855).map(|d| (d.width, d.height)).unwrap(), (1920, 1080));
+        // Far larger than the target: downscaled.
+        assert_eq!(decode(&png, 960, 540).map(|d| (d.width, d.height)).unwrap(), (960, 540));
     }
 
     #[test]

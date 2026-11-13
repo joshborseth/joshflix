@@ -10,88 +10,108 @@ component EpisodeTile inherits Rectangle {
     width: 172px;
     height: 97px + 44px;
 
-    // Focus lift: scales the glow and the thumbnail together.
+    // Culling box: see CULL. Off-screen tiles are skipped with their children.
     Rectangle {
-        x: 0;
-        y: 0;
-        width: parent.width;
-        height: 97px;
-        transform-scale: root.focused ? Theme.focus-scale : 1.0;
-        transform-origin: { x: self.width / 2, y: self.height / 2 };
-        animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+        x: -Theme.cull-pad;
+        y: -Theme.cull-pad;
+        width: root.width + 2 * Theme.cull-pad;
+        height: root.height + 2 * Theme.cull-pad;
+        clip: true;
+        Rectangle {
+            x: Theme.cull-pad;
+            y: Theme.cull-pad;
+            width: root.width;
+            height: root.height;
 
-        CardGlow {
-            width: parent.width;
-            height: parent.height;
-            on: root.focused;
-        }
-
-        thumb := Rectangle {
-            border-radius: Theme.radius;
-            background: Theme.surface-2;
-            clip: true;
-
-            if !root.episode.has-thumb: Text {
-                text: root.episode.label;
-                color: Theme.text-faint;
-                font-size: Theme.text-2xl;
-                font-weight: 900;
-            }
-            Image {
-                width: parent.width;
-                height: parent.height;
-                source: root.episode.thumb;
-                image-fit: cover;
-                opacity: root.episode.has-thumb ? (root.episode.upcoming ? 0.35 : 1) : 0;
-                animate opacity { duration: Theme.med; }
-            }
-            if root.episode.watched: Rectangle {
-                x: parent.width - 24px;
-                y: 6px;
-                width: 18px;
-                height: 18px;
-                border-radius: 9px;
-                background: Theme.accent;
-                Image {
-                    width: 11px;
-                    height: 11px;
-                    source: Icons.check;
-                    colorize: white;
-                }
-            }
-            if root.episode.progress > 0 && !root.episode.watched: Rectangle {
-                y: parent.height - 4px;
-                height: 4px;
-                background: #00000099;
-                Rectangle {
-                    x: 0;
-                    width: parent.width * root.episode.progress;
-                    background: Theme.accent;
-                }
-            }
+            // Focus lift: scales the glow and the thumbnail together.
             Rectangle {
-                border-radius: Theme.radius;
-                border-width: root.focused ? 2px : 0px;
-                border-color: Theme.accent-light;
+                x: 0;
+                y: 0;
+                width: parent.width;
+                height: 97px;
+                transform-scale: root.focused ? Theme.focus-scale : 1.0;
+                transform-origin: { x: self.width / 2, y: self.height / 2 };
+                animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
+
+                CardGlow {
+                    width: parent.width;
+                    height: parent.height;
+                    on: root.focused;
+                }
+
+                // No clip: thumbnails get rounded corners when decoded
+                // (ImageKind::card_radius), like posters.
+                Rectangle {
+                    border-radius: Theme.radius;
+                    background: Theme.surface-2;
+
+                    if !root.episode.has-thumb: Text {
+                        text: root.episode.label;
+                        color: Theme.text-faint;
+                        font-size: Theme.text-2xl;
+                        font-weight: 900;
+                    }
+                    Image {
+                        width: parent.width;
+                        height: parent.height;
+                        source: root.episode.thumb;
+                        image-fit: cover;
+                        opacity: root.episode.has-thumb ? (root.episode.upcoming ? 0.35 : 1) : 0;
+                        animate opacity { duration: Theme.med; }
+                    }
+                    if root.episode.watched: Rectangle {
+                        x: parent.width - 24px;
+                        y: 6px;
+                        width: 18px;
+                        height: 18px;
+                        border-radius: 9px;
+                        background: Theme.accent;
+                        Image {
+                            width: 11px;
+                            height: 11px;
+                            source: Icons.check;
+                            colorize: white;
+                        }
+                    }
+                    if root.episode.progress > 0 && !root.episode.watched: Rectangle {
+                        x: 6px;
+                        y: parent.height - 10px;
+                        width: parent.width - 12px;
+                        height: 4px;
+                        border-radius: 2px;
+                        background: #000000aa;
+                        Rectangle {
+                            x: 0;
+                            width: parent.width * clamp(root.episode.progress, 0, 1);
+                            border-radius: 2px;
+                            background: Theme.accent;
+                        }
+                    }
+                    Rectangle {
+                        border-radius: Theme.radius;
+                        border-width: root.focused ? 2px : 0px;
+                        border-color: Theme.accent-light;
+                    }
+                }
+            }
+            Text {
+                y: 97px + 8px;
+                width: parent.width;
+                text: root.episode.label + " · " + root.episode.title;
+                color: root.focused ? Theme.text : Theme.text-muted;
+                font-size: Theme.text-sm;
+                font-weight: 600;
+                overflow: elide;
+            }
+            Text {
+                y: 97px + 25px;
+                width: parent.width;
+                text: root.episode.aired;
+                color: root.episode.upcoming ? Theme.accent-light : Theme.text-faint;
+                font-size: Theme.text-xs;
+                overflow: elide;
             }
         }
-    }
-    Text {
-        y: 97px + 8px;
-        width: parent.width;
-        text: root.episode.label + " · " + root.episode.title;
-        color: root.focused ? Theme.text : Theme.text-muted;
-        font-size: Theme.text-sm;
-        font-weight: 600;
-        overflow: elide;
-    }
-    Text {
-        y: 97px + 24px;
-        width: parent.width;
-        text: root.episode.aired;
-        color: root.episode.upcoming ? Theme.accent-light : Theme.text-faint;
-        font-size: Theme.text-xs;
-        overflow: elide;
     }
 }
 
@@ -226,15 +246,23 @@ export component DetailScreen inherits Rectangle {
         y: root.height - 232px;
         height: 232px;
 
-        Rectangle {
+        // Season chips: equal widths, so the row can scroll to keep the
+        // focused one in view (long-running shows have 20+ seasons).
+        season-strip := Rectangle {
             x: Theme.safe-x - 4px;
             y: 0;
+            width: root.width - self.x;
             height: 30px;
-            HorizontalLayout {
-                x: 0;
-                spacing: 8px;
-                alignment: start;
+            clip: true;
+            property <length> chip-w: 84px;
+            property <int> visible-chips: max(1, floor((self.width - Theme.safe-x) / (chip-w + 8px)));
+            Rectangle {
+                x: -max(0, root.season-index - season-strip.visible-chips + 2) * (season-strip.chip-w + 8px);
+                animate x { duration: Theme.med; easing: ease-out-quart; }
                 for season[i] in root.seasons: Chip {
+                    x: i * (season-strip.chip-w + 8px);
+                    y: 1px;
+                    width: season-strip.chip-w;
                     label: season;
                     focused: root.zone == 1 && i == root.season-index;
                     selected: i == root.selected-season;

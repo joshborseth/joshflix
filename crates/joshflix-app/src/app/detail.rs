@@ -9,6 +9,7 @@ use joshflix_core::store::{LibraryItem, Progress};
 use joshflix_core::{MediaKind, VideoRef};
 use slint::{Global, Image, Model, ModelRc, VecModel};
 
+use super::browse::BACKDROP_SIZE;
 use super::{Controller, ImageKind, ImageSlot, Key, OpenTarget, shared};
 use crate::format;
 use crate::{DetailButton, DetailState, EpisodeCard, Icons, Screen};
@@ -64,10 +65,32 @@ pub struct DetailCtl {
     generation: u64,
     /// Fires once focus rests on an episode, to fetch its sources ahead.
     ahead_timer: slint::Timer,
+    /// Loads the focused season once focus rests on its chip: passing over
+    /// seasons mustn't queue every one's thumbnails.
+    season_timer: slint::Timer,
+    /// The season whose episodes are loaded.
+    loaded_season: Option<usize>,
 }
+
+/// How long focus rests on a season chip before its episodes load.
+const SEASON_SETTLE: std::time::Duration = std::time::Duration::from_millis(220);
 
 /// How long focus rests on an episode before its sources are fetched ahead.
 const EPISODE_AHEAD: std::time::Duration = std::time::Duration::from_millis(600);
+
+impl DetailCtl {
+    /// The focused episode card (video, sheet title, watched).
+    pub(super) fn focused_episode(&self) -> Option<(VideoRef, String, bool)> {
+        if self.zone != 2 {
+            return None;
+        }
+        let episode = self.episodes.get(self.episode_index)?;
+        let video = VideoRef::episode(&self.id, episode.season, episode.episode);
+        let title = format!("{} · {}", video.episode_label().unwrap_or_default(), episode.title);
+        let watched = self.progress.get(&episode.id).is_some_and(Progress::is_watched);
+        Some((video, title, watched))
+    }
+}
 
 static GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -93,6 +116,8 @@ impl Controller {
             logo_url: None,
             generation,
             ahead_timer: slint::Timer::default(),
+            season_timer: slint::Timer::default(),
+            loaded_season: None,
         };
         self.detail = Some(detail);
         let state = DetailState::get(&self.ui);
@@ -153,7 +178,7 @@ impl Controller {
         state.set_meta(shared(format::meta_line(preview)));
         state.set_description(shared(preview.description.as_deref().unwrap_or_default()));
         state.set_rating(shared(preview.imdb_rating.as_deref().unwrap_or_default()));
-        let backdrop = preview.background.as_deref().map(|b| metahub_size(b, "large"));
+        let backdrop = preview.background.as_deref().map(|b| metahub_size(b, BACKDROP_SIZE));
         let logo = preview.logo.clone();
         if let Some(detail) = self.detail.as_mut() {
             detail.backdrop_url = backdrop.clone();
@@ -209,9 +234,20 @@ impl Controller {
         self.refresh_detail_progress();
     }
 
-    /// Recompute buttons and episode progress (also after returning from the player).
+    /// Recompute buttons and episode progress.
     pub fn refresh_detail_progress(&mut self) {
+        self.refresh_detail(false);
+    }
+
+    /// Back from the player (or its progress just saved): recompute, and move
+    /// the episode focus to what Play now targets.
+    pub fn refresh_detail_after_playback(&mut self) {
+        self.refresh_detail(true);
+    }
+
+    fn refresh_detail(&mut self, refocus: bool) {
         let icons = Icons::get(&self.ui);
+        let today = format::today();
         let Some(detail) = self.detail.as_mut() else { return };
         detail.in_library = self.svc.store.in_library(&detail.id).unwrap_or(false);
         let progress: HashMap<String, Progress> = self
@@ -225,6 +261,7 @@ impl Controller {
         detail.progress = progress;
 
         // Which video does Play target?
+        let mut rewatch = false;
         let (target, label_prefix) = match detail.kind {
             MediaKind::Movie => (Some(VideoRef::movie(&detail.id)), None),
             MediaKind::Series => {
@@ -233,7 +270,16 @@ impl Controller {
                 let pick = match (latest, meta.as_deref()) {
                     (Some(p), Some(meta)) if p.is_watched() => {
                         let (s, e) = (p.video.season.unwrap_or(1), p.video.episode.unwrap_or(1));
-                        meta.next_episode(s, e).map(|n| VideoRef::episode(&detail.id, n.season, n.episode))
+                        match meta.next_episode(s, e) {
+                            Some(n) if n.is_released(&today) => Some(VideoRef::episode(&detail.id, n.season, n.episode)),
+                            // Caught up on a show still airing: offer the latest one again.
+                            Some(_) => Some(p.video.clone()),
+                            // Watched to the end: start the series again.
+                            None => {
+                                rewatch = true;
+                                meta.first_episode().map(|n| VideoRef::episode(&detail.id, n.season, n.episode))
+                            }
+                        }
                     }
                     (Some(p), _) => Some(p.video.clone()),
                     (None, Some(meta)) => meta
@@ -257,6 +303,7 @@ impl Controller {
             let suffix = label_prefix.map(|p| format!(" {p}")).unwrap_or_default();
             let label = match resume {
                 Some(pos) => format!("Resume{suffix} · {}", format::clock(pos)),
+                None if rewatch => format!("Watch again from{suffix}"),
                 None => format!("Play{suffix}"),
             };
             buttons.push(DetailButton { label: shared(label), icon: icons.get_play(), primary: true });
@@ -277,8 +324,9 @@ impl Controller {
         let state = DetailState::get(&self.ui);
         state.set_buttons(ModelRc::new(VecModel::from(buttons)));
 
-        // Seasons/episodes: land on the season of the Play target the first time.
-        if detail.kind == MediaKind::Series && detail.episodes.is_empty() && !detail.seasons.is_empty() {
+        // Seasons/episodes: land on the season and episode of the Play target
+        // the first time, and after playback.
+        if detail.kind == MediaKind::Series && (detail.episodes.is_empty() || refocus) && !detail.seasons.is_empty() {
             let target_season = detail
                 .actions
                 .iter()
@@ -339,6 +387,8 @@ impl Controller {
         let Some(detail) = self.detail.as_mut() else { return };
         let Some(meta) = detail.meta.clone() else { return };
         let season = detail.seasons.get(detail.season_focus).copied().unwrap_or(1);
+        detail.season_timer.stop();
+        detail.loaded_season = Some(detail.season_focus);
         detail.episodes = meta.episodes_in(season).cloned().collect();
         detail.episode_index = 0;
         self.refresh_episode_cards();
@@ -373,7 +423,7 @@ impl Controller {
         let weak = Rc::downgrade(&model);
         for (index, url) in thumbs.into_iter().enumerate() {
             let Some(url) = url else { continue };
-            let label = model.row_data(index).map(|r| r.label.to_string()).unwrap_or_default();
+            let label = model.row_data(index).map(|r| super::images::episode_key(&r)).unwrap_or_default();
             if let Some(image) = self.images.request(&url, ImageKind::Thumb, ImageSlot::Episode { model: weak.clone(), index, label })
                 && let Some(mut row) = model.row_data(index)
             {
@@ -442,11 +492,26 @@ impl Controller {
                 };
                 if let Some(next) = next {
                     detail.season_focus = next;
-                    self.load_season();
+                    let generation = detail.generation;
+                    detail.season_timer.start(slint::TimerMode::SingleShot, SEASON_SETTLE, move || {
+                        super::with_controller(|c| {
+                            if c.detail.as_ref().is_some_and(|d| d.generation == generation) {
+                                c.load_season();
+                                c.push_detail_focus();
+                            }
+                        });
+                    });
                 }
             }
             (1, Key::Up) => detail.zone = 0,
             (1, Key::Down) | (1, Key::Ok) => {
+                if detail.loaded_season != Some(detail.season_focus) {
+                    self.load_season();
+                }
+                let Some(detail) = self.detail.as_mut() else { return true };
+                if detail.episodes.is_empty() {
+                    return true;
+                }
                 detail.zone = 2;
                 self.episode_ahead_later();
             }
@@ -461,6 +526,11 @@ impl Controller {
             (2, Key::Up) => detail.zone = 1,
             (2, Key::Ok) => {
                 if let Some(episode) = detail.episodes.get(detail.episode_index).cloned() {
+                    if !episode.is_released(&format::today()) {
+                        let when = episode.released.as_deref().and_then(format::air_date).map(|d| format!(" on {d}")).unwrap_or_else(|| " later".into());
+                        self.toast(&format!("E{} airs{when}", episode.episode));
+                        return true;
+                    }
                     let video = VideoRef::episode(&detail.id, episode.season, episode.episode);
                     let progress = detail.progress.get(&episode.id).cloned();
                     let resume = progress.as_ref().and_then(Progress::resume_position);

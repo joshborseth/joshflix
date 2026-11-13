@@ -11,6 +11,11 @@ pub enum DialogAction {
     DismissUpdate,
     RemoveKey,
     Close,
+    // The card and episode action sheet.
+    RemoveFromContinue,
+    MarkWatched,
+    MarkUnwatched,
+    ToggleList,
 }
 
 pub struct DialogCtl {
@@ -31,8 +36,15 @@ impl Controller {
             .collect();
         state.set_buttons(ModelRc::new(VecModel::from(model)));
         state.set_index(0);
+        state.set_sheet(false);
         state.set_open(true);
         self.dialog = Some(DialogCtl { buttons, index: 0 });
+    }
+
+    /// A list of actions, one per line.
+    pub fn show_sheet(&mut self, title: &str, buttons: Vec<(&str, Image, bool, DialogAction)>) {
+        self.show_dialog(title, "", buttons);
+        Dialog::get(&self.ui).set_sheet(true);
     }
 
     fn close_dialog(&mut self) {
@@ -43,9 +55,10 @@ impl Controller {
     pub fn dialog_key(&mut self, key: Key) -> bool {
         let Some(dialog) = self.dialog.as_mut() else { return true };
         match key {
-            Key::Left => dialog.index = dialog.index.saturating_sub(1),
-            Key::Right => dialog.index = (dialog.index + 1).min(dialog.buttons.len() - 1),
+            Key::Left | Key::Up => dialog.index = dialog.index.saturating_sub(1),
+            Key::Right | Key::Down => dialog.index = (dialog.index + 1).min(dialog.buttons.len() - 1),
             Key::Back => {
+                self.menu_target = None;
                 let cancel = dialog.buttons.iter().find(|b| matches!(b.3, DialogAction::DismissUpdate | DialogAction::Close)).map(|b| b.3);
                 self.close_dialog();
                 if cancel == Some(DialogAction::DismissUpdate) {
@@ -85,7 +98,10 @@ impl Controller {
                 self.toast("Real-Debrid key removed");
                 self.show_onboarding();
             }
-            DialogAction::Close => {}
+            DialogAction::Close => self.menu_target = None,
+            DialogAction::RemoveFromContinue | DialogAction::MarkWatched | DialogAction::MarkUnwatched | DialogAction::ToggleList => {
+                self.sheet_action(action);
+            }
         }
     }
 

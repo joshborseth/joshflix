@@ -6,7 +6,7 @@ use joshflix_core::VideoRef;
 use joshflix_core::sources::{RankedSources, Source, pick_for_binge};
 use joshflix_core::store::{LastSource, Progress};
 use joshflix_player::{EndReason, PlayerEvent, TrackKind};
-use slint::{Global, ModelRc, VecModel};
+use slint::{Global, Model, ModelRc};
 
 use super::detail::{PlayContext, PlayRequest};
 use super::{Controller, Key, shared};
@@ -33,6 +33,9 @@ const NO_PICTURE_TIMEOUT: Duration = Duration::from_secs(8);
 const PICTURE_CONFIRM: Duration = Duration::from_secs(3);
 /// How often the TV log gets a dropped-frames line during playback.
 const DROPS_LOG_EVERY: Duration = Duration::from_secs(10);
+/// A stream that drops after playing is reopened where it stopped, this many
+/// times per title before the player gives up and says so.
+const MAX_RECONNECTS: u32 = 4;
 
 const CONTROL_COUNT_WITH_NEXT: usize = 7;
 const CONTROL_COUNT: usize = 6;
@@ -117,9 +120,20 @@ pub struct PlayerCtl {
     drops: (i64, i64),
     drops_logged: (i64, i64),
     drops_logged_at: Instant,
+    /// Times this title's stream was reopened after dropping mid-play.
+    reconnects: u32,
+    /// The stream dropped while the app was in the background: reopen it on return.
+    pub reconnect_on_return: bool,
+    /// The user picked a subtitle track from the menu.
+    subtitle_user_choice: bool,
 }
 
 impl PlayerCtl {
+    /// The stream is being reopened after it dropped mid-play.
+    pub fn reconnecting(&self) -> bool {
+        self.reconnects > 0 && !self.started
+    }
+
     fn controls(&self) -> usize {
         if self.next.request.is_some() { CONTROL_COUNT_WITH_NEXT } else { CONTROL_COUNT }
     }
@@ -142,6 +156,9 @@ impl Controller {
         let wanted = self.settings.audio_normalization;
         let normalize = self.apply_audio_normalization(&player, wanted, false) && wanted;
         let _ = player.set_subtitle_scale(f64::from(self.settings.subtitle_scale));
+        // The audio language picked last time (a multi-language release
+        // shouldn't switch back to its default every episode).
+        let _ = player.set_property("alang", self.settings.audio_language.as_deref().unwrap_or(""));
         crate::video::want_video(true);
         if let Err(e) = player.load(&url, request.resume_at) {
             crate::video::want_video(self.screen == Screen::Player);
@@ -149,7 +166,12 @@ impl Controller {
             self.push_start();
             return;
         }
-        self.platform.keep_screen_on(true);
+        if self.backgrounded {
+            // The link resolved after the app left the screen: wait paused.
+            let _ = player.set_paused(true);
+        } else {
+            self.platform.keep_screen_on(true);
+        }
         tracing::info!(
             "play {} · {} · cached={} · stream host {}{}",
             request.video.video_id(),
@@ -201,6 +223,9 @@ impl Controller {
             drops_logged_at: Instant::now(),
             overlay_shown: None,
             normalize,
+            reconnects: 0,
+            reconnect_on_return: false,
+            subtitle_user_choice: false,
         });
         let (title, subtitle) = super::video_title(&request.context.name, &request.video, request.context.episode_title.as_deref());
         let state = PlayerState::get(&self.ui);
@@ -286,6 +311,12 @@ impl Controller {
         let Some(next) = detail.next_episode(season, episode) else {
             return NextCtl { header: "FINAL EPISODE".into(), title: format!("That's the end of {}", detail.preview.name), ..empty };
         };
+        if !next.is_released(&format::today()) {
+            // A show still airing: nothing to autoplay yet.
+            let label = VideoRef::episode(&request.video.meta_id, next.season, next.episode).episode_label().unwrap_or_default();
+            let when = next.released.as_deref().and_then(format::air_date).map(|d| format!(" airs {d}")).unwrap_or_else(|| " hasn't aired yet".into());
+            return NextCtl { header: "LATEST EPISODE".into(), title: format!("{label}{when}"), ..empty };
+        }
         let header = if detail.is_season_finale(season, episode) {
             format!("SEASON {season} FINALE  ·  UP NEXT")
         } else {
@@ -407,8 +438,13 @@ impl Controller {
                 let near_end = p.duration > 0.0
                     && (p.position >= p.duration * joshflix_core::store::WATCHED_FRACTION || p.duration - p.position < 90.0);
                 if !near_end {
-                    p.error = Some("The stream ended early (the connection dropped). Press Back and play again to resume.".into());
+                    if p.reconnects < MAX_RECONNECTS {
+                        self.reconnect("the stream ended early");
+                        return;
+                    }
+                    p.error = Some("The connection keeps dropping. Press Back and play again to resume, or try another source.".into());
                     p.buffering = None;
+                    p.source_failed = true;
                     self.save_progress(false);
                 } else if !p.finished {
                     p.finished = true;
@@ -420,6 +456,11 @@ impl Controller {
             }
             PlayerEvent::Ended(EndReason::Error(message)) => {
                 tracing::warn!("playback failed: {message} (last mpv error: {:?})", p.last_mpv_error);
+                // It had played, so the link works: most likely the connection dropped.
+                if p.started && p.reconnects < MAX_RECONNECTS {
+                    self.reconnect("playback failed");
+                    return;
+                }
                 p.source_failed = true;
                 let detail = p.last_mpv_error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default();
                 p.error = Some(format!("Playback failed: {message}{detail}. Press Back and try another source."));
@@ -436,8 +477,9 @@ impl Controller {
             return;
         }
         p.subtitles_added = true;
-        // Re-evaluate the choice once these arrive (they can land after the file loaded).
-        p.subtitle_choice_pending = true;
+        // Re-evaluate the choice once these arrive (they can land after the
+        // file loaded), unless the user already picked a track.
+        p.subtitle_choice_pending = !p.subtitle_user_choice;
         let Some(player) = self.video.player() else { return };
         let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
         for sub in &p.subtitles {
@@ -523,11 +565,17 @@ impl Controller {
             Some(pct) if pct > 0 => format!("Buffering {pct}%"),
             _ => "Buffering…".to_owned(),
         }));
-        let progress = if p.duration > 0.0 { (p.position / p.duration) as f32 } else { 0.0 };
-        state.set_progress(progress);
-        state.set_position_text(shared(format::clock(p.position)));
-        state.set_duration_text(shared(format::clock(p.duration)));
-        state.set_remaining_text(shared(if p.duration > 0.0 { format!("-{}", format::clock(p.duration - p.position)) } else { String::new() }));
+        // The clock and seek bar only change what's drawn while the controls
+        // show: skipping them otherwise lets a still UI render no frames at
+        // all during playback (each one is a translucent 1080p layer for the
+        // compositor to blend over the video).
+        if overlay {
+            let progress = if p.duration > 0.0 { (p.position / p.duration) as f32 } else { 0.0 };
+            state.set_progress(progress);
+            state.set_position_text(shared(format::clock(p.position)));
+            state.set_duration_text(shared(format::clock(p.duration)));
+            state.set_remaining_text(shared(if p.duration > 0.0 { format!("-{}", format::clock(p.duration - p.position)) } else { String::new() }));
+        }
         if let Some(target) = p.seek_target {
             state.set_seeking(true);
             state.set_seek_progress(if p.duration > 0.0 { (target / p.duration) as f32 } else { 0.0 });
@@ -549,7 +597,12 @@ impl Controller {
                     .iter()
                     .map(|(_, label, selected)| TrackItem { label: shared(label), selected: *selected })
                     .collect();
-                state.set_menu_options(ModelRc::new(VecModel::from(options)));
+                // One model for the menu's life: a new one rebuilds every row.
+                let model = &self.track_menu_model;
+                if model.iter().ne(options.iter().cloned()) {
+                    model.set_vec(options);
+                }
+                state.set_menu_options(ModelRc::from(model.clone()));
                 state.set_menu_index(menu.index as i32);
             }
             None => state.set_menu_open(false),
@@ -699,7 +752,8 @@ impl Controller {
             p.next.focused = false;
         }
         // The next episode starts from `on_finished` at the end of the file.
-        let save_due = p.video_shown && p.last_save.elapsed() >= SAVE_EVERY && !p.paused;
+        // A finished episode stays watched while the next one loads.
+        let save_due = p.video_shown && p.last_save.elapsed() >= SAVE_EVERY && !p.paused && !p.finished && p.pending_next.is_none();
         // For the house lights (through the relay); buffering doesn't count as a pause.
         let (name, episode) =
             super::video_title(&p.request.context.name, &p.request.video, p.request.context.episode_title.as_deref());
@@ -753,7 +807,7 @@ impl Controller {
         });
         // Database writes fsync; keep them off the thread that renders video.
         let store = self.svc.store.clone();
-        self.rt.spawn_blocking(move || {
+        let write = tokio::task::spawn_blocking(move || {
             if let Err(e) = store.save_progress(progress) {
                 tracing::warn!("save progress: {e}");
             }
@@ -764,6 +818,17 @@ impl Controller {
                 let _ = store.save_progress(next);
             }
         });
+        // The page the player returned to read the store before this landed.
+        self.spawn(write, |c, _| c.progress_saved());
+    }
+
+    /// A progress write landed: refresh what shows it, unless still playing.
+    fn progress_saved(&mut self) {
+        match self.screen {
+            Screen::Detail => self.refresh_detail_after_playback(),
+            Screen::Browse | Screen::Mylist if !self.rail_focus => self.refresh_local_rows(),
+            _ => {}
+        }
     }
 
     fn on_finished(&mut self) {
@@ -783,6 +848,10 @@ impl Controller {
     /// Stop mpv and forget the session.
     pub fn stop_playback(&mut self, save: bool) {
         self.autoplay_generation += 1; // drop any in-flight next-episode lookup
+        // A start cancelled before its first frame mustn't time the next one.
+        if self.player.as_ref().is_some_and(|p| !p.started) {
+            self.sources.play_started = None;
+        }
         // A finished episode was already saved as watched; don't overwrite it.
         if save && self.player.as_ref().is_some_and(|p| !p.finished) {
             self.save_progress(false);
@@ -971,9 +1040,39 @@ impl Controller {
         }
     }
 
+    /// The stream dropped after playing: open the same link again where it
+    /// stopped. The start cover says so meanwhile. Left in the background,
+    /// it waits until the app is back.
+    pub(super) fn reconnect(&mut self, why: &str) {
+        let backgrounded = self.backgrounded;
+        let Some(p) = self.player.as_mut() else { return };
+        if backgrounded {
+            tracing::warn!("{why} in the background; reopening on return");
+            p.reconnect_on_return = true;
+            p.buffering = None;
+            return;
+        }
+        let attempt = p.reconnects + 1;
+        let mut request = p.request.clone();
+        let at = p.seek_target.unwrap_or(p.position);
+        request.resume_at = Some(at).filter(|s| *s > 1.0).or(request.resume_at);
+        let (source, url, next) = (p.source.clone(), p.url.clone(), (p.next.dismissed, p.next.shown));
+        tracing::warn!("{why}; reopening the stream at {at:.0} s (attempt {attempt} of {MAX_RECONNECTS})");
+        self.save_progress(false);
+        // Keep the session's screen-on and frame-rate state: no stop_playback,
+        // which would switch the display mode back and forth.
+        self.player = None;
+        self.start_playback(request, source, url);
+        if let Some(p) = self.player.as_mut() {
+            p.reconnects = attempt;
+            (p.next.dismissed, p.next.shown) = next;
+        }
+        self.push_player();
+    }
+
     /// Pause and save when the app leaves the screen.
     pub fn pause_for_background(&mut self) {
-        if self.player.is_some() {
+        if self.player.as_ref().is_some_and(|p| !p.finished && p.pending_next.is_none()) {
             if let Some(player) = self.video.player() {
                 let _ = player.set_paused(true);
             }
@@ -1072,9 +1171,26 @@ impl Controller {
                 Key::Down => menu.index = (menu.index + 1).min(menu.entries.len() - 1),
                 Key::Ok => {
                     let (id, _, _) = menu.entries[menu.index].clone();
-                    let _ = player.select_track(menu.kind, id);
+                    let kind = menu.kind;
+                    let _ = player.select_track(kind, id);
+                    if kind == TrackKind::Subtitle {
+                        // Later OpenSubtitles results mustn't undo this choice.
+                        p.subtitle_choice_pending = false;
+                        p.subtitle_user_choice = true;
+                    }
                     p.menu = None;
                     self.refresh_subtitle_state();
+                    // Remember the choice for the next episode.
+                    let lang = id.and_then(|id| player.tracks().into_iter().find(|t| t.id == id && t.kind == kind)).and_then(|t| t.lang);
+                    match kind {
+                        TrackKind::Audio if lang.is_some() && lang != self.settings.audio_language => {
+                            self.save_settings(|s| s.audio_language = lang);
+                        }
+                        TrackKind::Subtitle if id.is_some() != self.settings.subtitles_enabled => {
+                            self.save_settings(|s| s.subtitles_enabled = id.is_some());
+                        }
+                        _ => {}
+                    }
                 }
                 Key::Back | Key::Left | Key::Right => p.menu = None,
                 _ => {}
@@ -1115,6 +1231,12 @@ impl Controller {
                 } else if p.next.autoplay_armed {
                     p.next.autoplay_armed = false;
                     p.next.dismissed = true;
+                } else if overlay_was_visible && !p.paused && p.error.is_none() {
+                    // First Back hides the controls; the next one leaves.
+                    p.overlay_until = Instant::now();
+                    p.zone = 0;
+                    self.push_player();
+                    return true;
                 } else if p.source_failed {
                     // Resume would pick this source again: offer the others.
                     let mut request = p.request.clone();
@@ -1128,7 +1250,7 @@ impl Controller {
                     return true;
                 }
             }
-            Key::Ok if p.next.autoplay_armed => {
+            Key::Ok if p.next.autoplay_armed && !overlay_was_visible && p.seek_target.is_none() => {
                 self.play_next();
                 return true;
             }

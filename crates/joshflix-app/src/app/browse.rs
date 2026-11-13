@@ -20,6 +20,11 @@ use crate::{BrowseState, Hero, Poster, Row};
 /// (`Theme.scroll` is 300 ms, nearly settled by now).
 const HERO_SETTLE: Duration = Duration::from_millis(200);
 
+/// Metahub's backdrop size, the same on every screen: "medium" and "large"
+/// serve the same 1080p file, and one URL makes the detail page and the start
+/// screen cache hits after the hero showed it.
+pub const BACKDROP_SIZE: &str = "medium";
+
 /// Everything shown in the hero for a focused card.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct HeroInfo {
@@ -39,7 +44,7 @@ impl HeroInfo {
             backdrop: meta
                 .background
                 .as_deref()
-                .map(|b| metahub_size(b, "medium")),
+                .map(|b| metahub_size(b, BACKDROP_SIZE)),
             meta: format::meta_line(meta),
             rating: meta.imdb_rating.clone().unwrap_or_default(),
             description: meta.description.clone().unwrap_or_default(),
@@ -59,6 +64,8 @@ pub struct RowItem {
     pub badge: String,
     pub hero: HeroInfo,
     pub target: OpenTarget,
+    /// The Continue Watching entry this card shows.
+    pub progress_record: Option<Progress>,
 }
 
 impl RowItem {
@@ -73,6 +80,7 @@ impl RowItem {
             badge: String::new(),
             hero: HeroInfo::from_meta(meta),
             target: OpenTarget { kind: meta.kind, id: meta.id.clone(), preview: Some(meta.clone()), focus_resume: false },
+            progress_record: None,
         }
     }
 
@@ -106,7 +114,26 @@ impl RowItem {
                 rating: String::new(),
                 description: if p.up_next { "Ready for the next episode.".into() } else { format!("Resume at {}", format::clock(p.position_secs)) },
             },
-            target: OpenTarget { kind: p.video.kind, id: p.video.meta_id.clone(), preview: None, focus_resume: true },
+            // The page shows title and art at once, and stays usable if Cinemeta fails.
+            target: OpenTarget {
+                kind: p.video.kind,
+                id: p.video.meta_id.clone(),
+                preview: Some(MetaPreview {
+                    id: p.video.meta_id.clone(),
+                    kind: p.video.kind,
+                    name: p.name.clone(),
+                    poster: p.poster.clone(),
+                    background: p.background.clone(),
+                    logo: p.logo.clone(),
+                    description: None,
+                    release_info: None,
+                    imdb_rating: None,
+                    genres: vec![],
+                    runtime: None,
+                }),
+                focus_resume: true,
+            },
+            progress_record: Some(p.clone()),
         }
     }
 
@@ -134,6 +161,8 @@ pub struct RowCtl {
     pub loading: bool,
     pub wide: bool,
     pub empty_text: String,
+    /// The network answered for this row (a saved copy mustn't replace it).
+    pub fresh: bool,
 }
 
 impl RowCtl {
@@ -148,11 +177,20 @@ impl RowCtl {
             loading: true,
             wide,
             empty_text: String::new(),
+            fresh: false,
         }
     }
 
     pub fn set_items(&mut self, items: Vec<RowItem>) {
-        self.model.set_vec(items.iter().map(RowItem::to_poster).collect::<Vec<_>>());
+        // Same cards as shown (Continue Watching and My List reload on every
+        // visit): keep the model, so the row's cards and textures survive.
+        let same = self.items.len() == items.len()
+            && self.items.iter().zip(&items).all(|(a, b)| {
+                a.id == b.id && a.subtitle == b.subtitle && a.progress == b.progress && a.badge == b.badge && a.image == b.image
+            });
+        if !same || self.model.row_count() != items.len() {
+            self.model.set_vec(items.iter().map(RowItem::to_poster).collect::<Vec<_>>());
+        }
         self.items = items;
         self.focused = self.focused.min(self.items.len().saturating_sub(1));
         self.loading = false;
@@ -231,7 +269,7 @@ impl BrowseCtl {
         }
     }
 
-    fn focused_item(&self) -> Option<&RowItem> {
+    pub(super) fn focused_item(&self) -> Option<&RowItem> {
         let row = self.rows.get(self.row)?;
         row.items.get(row.focused)
     }
@@ -276,7 +314,7 @@ fn plan(section: Section) -> Vec<RowCtl> {
 }
 
 impl Controller {
-    fn browse_index(&self, section: Section) -> usize {
+    pub(super) fn browse_index(&self, section: Section) -> usize {
         self.browse.iter().position(|b| b.section == section).unwrap_or(0)
     }
 
@@ -291,9 +329,16 @@ impl Controller {
                 self.load_row(index, row, generation);
             }
         } else {
-            // Local rows can change while away (progress, My List).
+            // Local rows can change while away (progress, My List), and
+            // catalog rows that failed (no network at startup) try again.
             for row in 0..self.browse[index].rows.len() {
-                if !matches!(self.browse[index].rows[row].source, RowSource::Catalog(_)) {
+                let r = &mut self.browse[index].rows[row];
+                let failed = matches!(r.source, RowSource::Catalog(_)) && r.items.is_empty() && !r.loading;
+                if failed {
+                    r.loading = true;
+                    r.empty_text.clear();
+                }
+                if !matches!(r.source, RowSource::Catalog(_)) || failed {
                     let generation = self.browse[index].generation;
                     self.load_row(index, row, generation);
                 }
@@ -305,7 +350,17 @@ impl Controller {
             b.row = b.rows.iter().position(|r| r.is_navigable()).unwrap_or(0);
         }
         let rows: Vec<Row> = b.rows.iter().map(RowCtl::to_row).collect();
-        b.model.set_vec(rows);
+        if b.model.row_count() == rows.len() {
+            // Coming back: patch changed rows only. A reset would rebuild
+            // every row and card and upload all their textures again.
+            for (i, row) in rows.into_iter().enumerate() {
+                if b.model.row_data(i).as_ref() != Some(&row) {
+                    b.model.set_row_data(i, row);
+                }
+            }
+        } else {
+            b.model.set_vec(rows);
+        }
         let state = BrowseState::get(&self.ui);
         state.set_rows(ModelRc::from(b.model.clone()));
         state.set_section_title(match section {
@@ -358,16 +413,32 @@ impl Controller {
                 self.fill_row(browse, row, items);
             }
             RowSource::Catalog(query) => {
+                // Last session's answer first (a cold start paints at once),
+                // then the fresh one replaces it.
+                self.browse[browse].rows[row].fresh = false;
+                let cinemeta = self.svc.cinemeta.clone();
+                let cached_query = query.clone();
+                self.spawn(async move { cinemeta.cached_catalog(&cached_query).await }, move |c, cached| {
+                    let Some(metas) = cached else { return };
+                    if c.browse[browse].generation != generation || c.browse[browse].rows[row].fresh {
+                        return;
+                    }
+                    let items = metas.iter().take(40).map(RowItem::from_meta).collect();
+                    c.fill_row(browse, row, items);
+                });
                 let cinemeta = self.svc.cinemeta.clone();
                 self.spawn(async move { cinemeta.catalog(&query).await }, move |c, result| {
                     if c.browse[browse].generation != generation {
                         return;
                     }
+                    c.browse[browse].rows[row].fresh = true;
                     match result {
                         Ok(metas) => {
                             let items = metas.iter().take(40).map(RowItem::from_meta).collect();
                             c.fill_row(browse, row, items);
                         }
+                        // Keep the saved titles when the network is down.
+                        Err(e) if !c.browse[browse].rows[row].items.is_empty() => tracing::warn!("row {row}: {e}"),
                         Err(e) => {
                             tracing::warn!("row {row}: {e}");
                             c.browse[browse].rows[row].empty_text = e.to_string();
@@ -487,11 +558,15 @@ impl Controller {
                 heroes.extend(row.items.get(row.focused).map(|item| item.hero.clone()));
             }
         }
-        for hero in heroes {
+        // Logos are small; a backdrop is a full 1080p decode, so only the
+        // likeliest next one (the card to the right) is fetched ahead.
+        for (i, hero) in heroes.into_iter().enumerate() {
             if let Some(url) = &hero.logo {
                 self.images.prefetch(url, ImageKind::Logo);
             }
-            if let Some(url) = &hero.backdrop {
+            if i == 0
+                && let Some(url) = &hero.backdrop
+            {
                 self.images.prefetch(url, ImageKind::Backdrop);
             }
         }
@@ -599,7 +674,30 @@ impl Controller {
                     self.open(item.target);
                 }
             }
-            Key::Back => return self.focus_rail(),
+            Key::Back => {
+                // Deep in the rows, Back first returns to the top (as on Netflix).
+                let b = &mut self.browse[browse];
+                let first = b.rows.iter().position(RowCtl::is_navigable).unwrap_or(0);
+                let at_top = b.row == first && b.rows.get(b.row).is_none_or(|r| r.focused == 0);
+                if at_top {
+                    return self.focus_rail();
+                }
+                let row_index = b.row;
+                if let Some(row) = b.rows.get_mut(row_index) {
+                    row.focused = 0;
+                    let data = row.to_row();
+                    b.model.set_row_data(row_index, data);
+                }
+                if let Some(row) = b.rows.get_mut(first) {
+                    row.focused = 0;
+                    let data = row.to_row();
+                    b.model.set_row_data(first, data);
+                }
+                b.row = first;
+                self.push_browse_scroll(browse);
+                self.update_hero_later(browse);
+                self.load_visible_rows(browse);
+            }
             _ => {}
         }
         true

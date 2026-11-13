@@ -105,6 +105,8 @@ fn qr_image(text: &str) -> Option<Image> {
 
 impl Controller {
     pub fn show_onboarding(&mut self) {
+        // Back during the step-1 transition: don't let it finish later.
+        self.pairing.leave_timer.stop();
         self.onboarding_step = 0;
         let state = OnboardingState::get(&self.ui);
         state.set_step(0);
@@ -148,7 +150,7 @@ impl Controller {
         self.start_pairing(PairingContext::Settings);
     }
 
-    fn close_settings_pairing(&mut self) {
+    pub(super) fn close_settings_pairing(&mut self) {
         self.pairing.cancel();
         SettingsState::get(&self.ui).set_pairing_open(false);
         self.show_settings();

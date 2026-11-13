@@ -22,8 +22,9 @@ export component Rail inherits Rectangle {
     Rectangle {
         x: 0;
         y: 0;
-        width: Theme.rail-collapsed;
-        background: @linear-gradient(90deg, #0b0d12cc 0%, #0b0d1200 100%);
+        width: Theme.rail-collapsed + 20px;
+        // Solid behind the icons, so cards scrolling under them don't hide them.
+        background: @linear-gradient(90deg, #0b0d12f2 0%, #0b0d12e6 70%, #0b0d1200 100%);
     }
 
     // Brand mark.
@@ -66,7 +67,7 @@ export component Rail inherits Rectangle {
 
         // Selected-section marker when collapsed.
         Rectangle {
-            x: -8px;
+            x: -4px;
             width: 3px;
             height: 16px;
             border-radius: 2px;

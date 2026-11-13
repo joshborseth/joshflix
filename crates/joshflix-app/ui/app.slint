@@ -192,6 +192,8 @@ export global Dialog {
     in property <string> body;
     in property <[DetailButton]> buttons;
     in property <int> index;
+    // A list of actions (one per line) instead of a question.
+    in property <bool> sheet;
 }
 
 export global AppState {
@@ -211,8 +213,8 @@ component DialogBox inherits Rectangle {
     Rectangle {
         x: (root.width - self.width) / 2;
         y: (root.height - self.height) / 2;
-        width: min(460px, root.width - 80px);
-        height: box.preferred-height + 44px;
+        width: min(Dialog.sheet ? 360px : 460px, root.width - 80px);
+        height: box.preferred-height + (Dialog.sheet ? 0px : 44px);
         border-radius: Theme.radius-lg;
         background: Theme.bg-raised;
         border-width: 1px;
@@ -229,20 +231,29 @@ component DialogBox inherits Rectangle {
                 font-weight: 800;
                 wrap: word-wrap;
             }
-            Text {
+            if Dialog.body != "": Text {
                 text: Dialog.body;
                 color: Theme.text-muted;
                 font-size: Theme.text-md;
                 wrap: word-wrap;
             }
-            Rectangle { height: 6px; }
-            HorizontalLayout {
+            if !Dialog.sheet: Rectangle { height: 6px; }
+            if !Dialog.sheet: HorizontalLayout {
                 spacing: 10px;
                 alignment: end;
                 for button[i] in Dialog.buttons: PillButton {
                     label: button.label;
                     icon: button.icon;
                     primary: button.primary;
+                    focused: i == Dialog.index;
+                }
+            }
+            if Dialog.sheet: VerticalLayout {
+                spacing: 8px;
+                for button[i] in Dialog.buttons: PillButton {
+                    label: button.label;
+                    icon: button.icon;
+                    primary: i == Dialog.index;
                     focused: i == Dialog.index;
                 }
             }
@@ -269,8 +280,10 @@ export component AppWindow inherits Window {
             if (event.text == Key.RightArrow) { return AppState.key(event.repeat ? "right+" : "right") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.UpArrow) { return AppState.key("up") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.DownArrow) { return AppState.key("down") ? EventResult.accept : EventResult.reject; }
-            // A held OK or Back repeats; acting on each repeat would fire buttons or pop screens in a burst.
-            if (event.repeat && (event.text == Key.Return || event.text == Key.Escape || event.text == Key.Back)) { return EventResult.accept; }
+            // A held OK on a card opens its action sheet (the controller ignores other repeats).
+            if (event.repeat && event.text == Key.Return) { return AppState.key("ok+") ? EventResult.accept : EventResult.reject; }
+            // A held Back repeats; acting on each repeat would pop screens in a burst.
+            if (event.repeat && (event.text == Key.Escape || event.text == Key.Back)) { return EventResult.accept; }
             if (event.text == Key.Return || (event.text == Key.Space && AppState.screen == Screen.player)) { return AppState.key("ok") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.Escape || event.text == Key.Back) { return AppState.key("back") ? EventResult.accept : EventResult.reject; }
             if (event.text == Key.Backspace) { return AppState.key("backspace") ? EventResult.accept : EventResult.reject; }
@@ -280,6 +293,10 @@ export component AppWindow inherits Window {
             if (event.text != "" && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta) {
                 return AppState.key("char:" + event.text) ? EventResult.accept : EventResult.reject;
             }
+            EventResult.reject
+        }
+        key-released(event) => {
+            if (event.text == Key.Return) { return AppState.key("okup") ? EventResult.accept : EventResult.reject; }
             EventResult.reject
         }
     }

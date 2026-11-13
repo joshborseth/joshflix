@@ -422,6 +422,10 @@ impl Controller {
 
     pub fn install_update(&mut self) {
         let Some(update) = self.update_available.clone() else { return };
+        if self.settings_ctl.downloading.is_some() {
+            self.toast("The update is already downloading…");
+            return;
+        }
         if !self.platform.can_install_updates() {
             self.toast("Updates install on the TV. On desktop, rebuild instead.");
             return;

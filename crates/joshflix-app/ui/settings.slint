@@ -5,16 +5,20 @@ import { ProgressBar } from "components.slint";
 component SettingRow inherits Rectangle {
     in property <SettingItem> item;
     in property <bool> focused;
-    height: item.hint != "" ? 58px : 44px;
+    // The focused row shows its whole hint (some explain when a change applies).
+    height: max(item.hint != "" ? 58px : 44px, text-box.preferred-height + 22px);
+    // Room for the control on the right, by kind.
+    property <length> control-w: item.kind == "toggle" ? 56px : item.kind == "choice" ? 150px
+        : (item.kind == "info" || item.kind == "action") ? 120px : 0px;
     border-radius: Theme.radius;
     background: focused ? Theme.surface-3 : Theme.surface;
     border-width: focused ? 2px : 0px;
     border-color: item.kind == "danger" ? Theme.danger : Theme.accent;
     animate background { duration: Theme.fast; }
 
-    VerticalLayout {
+    text-box := VerticalLayout {
         x: 16px;
-        width: root.width - 32px - 150px;
+        width: root.width - 32px - root.control-w;
         alignment: center;
         spacing: 3px;
         Text {
@@ -26,8 +30,9 @@ component SettingRow inherits Rectangle {
         }
         if root.item.hint != "": Text {
             text: root.item.hint;
-            color: Theme.text-faint;
+            color: root.focused ? Theme.text-muted : Theme.text-faint;
             font-size: Theme.text-sm;
+            wrap: root.focused ? word-wrap : no-wrap;
             overflow: elide;
         }
     }

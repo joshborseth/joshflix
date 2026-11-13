@@ -38,7 +38,7 @@ impl ImageKind {
     /// UI can draw it without a rounded clip. Matches `Theme.radius` at 1.1x.
     fn card_radius(self) -> Option<f32> {
         match self {
-            Self::Poster | Self::Wide => Some(10.0 * 1.1),
+            Self::Poster | Self::Wide | Self::Thumb => Some(10.0 * 1.1),
             _ => None,
         }
     }
@@ -62,12 +62,30 @@ pub struct ImageCache {
     cache: HashMap<String, Image>,
     order: VecDeque<String>,
     inflight: HashSet<String>,
-    failed: HashSet<String>,
+    /// Decoded bytes held by `cache`.
+    bytes: usize,
+    /// Images that failed, and when: tried again after `RETRY_FAILED`
+    /// (a Wi-Fi blip at startup mustn't leave blank cards for the session).
+    failed: HashMap<String, std::time::Instant>,
     waiters: HashMap<String, Vec<ImageSlot>>,
-    limit: Arc<Semaphore>,
+    net: Arc<Semaphore>,
+    decode_cards: Arc<Semaphore>,
+    decode_large: Arc<Semaphore>,
 }
 
-const CAPACITY: usize = 360;
+/// Decoded artwork kept for reuse, by bytes (a backdrop is 5–8 MB, a poster 0.3 MB).
+const BUDGET_BYTES: usize = 128 * 1024 * 1024;
+const RETRY_FAILED: std::time::Duration = std::time::Duration::from_secs(60);
+
+fn image_bytes(image: &Image) -> usize {
+    let size = image.size();
+    size.width as usize * size.height as usize * 4
+}
+
+/// Identifies an episode card across seasons ("E5" repeats in every season).
+pub fn episode_key(card: &EpisodeCard) -> String {
+    format!("{}|{}", card.label, card.title)
+}
 
 fn cache_key(url: &str, kind: ImageKind, scale: f32) -> String {
     format!("{kind:?}@{scale:.2}|{url}")
@@ -82,10 +100,15 @@ impl ImageCache {
             cache: HashMap::new(),
             order: VecDeque::new(),
             inflight: HashSet::new(),
-            failed: HashSet::new(),
+            bytes: 0,
+            failed: HashMap::new(),
             waiters: HashMap::new(),
+            net: Arc::new(Semaphore::new(8)),
             // Few concurrent decodes keep TV CPUs responsive while scrolling.
-            limit: Arc::new(Semaphore::new(4)),
+            // Backdrops and logos decode on their own permit, so cards never
+            // queue behind a 1080p backdrop for a title already scrolled past.
+            decode_cards: Arc::new(Semaphore::new(2)),
+            decode_large: Arc::new(Semaphore::new(1)),
         }
     }
 
@@ -107,10 +130,19 @@ impl ImageCache {
         }
         let key = cache_key(url, kind, self.scale);
         if let Some(image) = self.cache.get(&key) {
-            return Some(image.clone());
+            let image = image.clone();
+            // Least recently used goes first.
+            if let Some(at) = self.order.iter().position(|k| *k == key) {
+                self.order.remove(at);
+                self.order.push_back(key);
+            }
+            return Some(image);
         }
-        if self.failed.contains(&key) {
-            return None;
+        if let Some(at) = self.failed.get(&key) {
+            if at.elapsed() < RETRY_FAILED {
+                return None;
+            }
+            self.failed.remove(&key);
         }
         self.waiters.entry(key.clone()).or_default().push(slot);
         if !self.inflight.insert(key.clone()) {
@@ -120,16 +152,24 @@ impl ImageCache {
         let (w, h) = ((w * self.scale).ceil() as u32, (h * self.scale).ceil() as u32);
         let radius = kind.card_radius().map(|r| r * self.scale);
         let loader = self.loader.clone();
-        let limit = self.limit.clone();
+        let net = self.net.clone();
+        let decode = if matches!(kind, ImageKind::Backdrop | ImageKind::Logo) { self.decode_large.clone() } else { self.decode_cards.clone() };
         let url = url.to_owned();
         self.rt.spawn(async move {
             let result: Option<Pixels> = async {
-                let _permit = limit.acquire().await.ok()?;
-                let started = std::time::Instant::now();
-                let decoded = match radius {
-                    Some(radius) => loader.load_card(&url, w, h, radius).await.ok()?,
-                    None => loader.load(&url, w, h).await.ok()?,
+                let bytes = {
+                    let _permit = net.acquire().await.ok()?;
+                    loader.fetch(&url).await.ok()?
                 };
+                let _permit = decode.acquire().await.ok()?;
+                let started = std::time::Instant::now();
+                let decoded = tokio::task::spawn_blocking(move || match radius {
+                    Some(radius) => joshflix_core::images::decode_card(&bytes, w, h, radius),
+                    None => joshflix_core::images::decode(&bytes, w, h),
+                })
+                .await
+                .ok()?
+                .ok()?;
                 crate::perf::image_loaded(started.elapsed().as_nanos() as u64);
                 Some(SharedPixelBuffer::clone_from_slice(&decoded.rgba, decoded.width, decoded.height))
             }
@@ -148,17 +188,24 @@ impl ImageCache {
 
     /// This image failed to load earlier, so it won't arrive.
     pub fn has_failed(&self, url: &str, kind: ImageKind) -> bool {
-        self.failed.contains(&cache_key(url, kind, self.scale))
+        self.failed.get(&cache_key(url, kind, self.scale)).is_some_and(|at| at.elapsed() < RETRY_FAILED)
     }
 
     fn insert(&mut self, key: String, image: Image) {
-        if self.cache.len() >= CAPACITY
+        let size = image_bytes(&image);
+        while self.bytes + size > BUDGET_BYTES
             && let Some(old) = self.order.pop_front()
         {
-            self.cache.remove(&old);
+            if let Some(evicted) = self.cache.remove(&old) {
+                self.bytes = self.bytes.saturating_sub(image_bytes(&evicted));
+            }
         }
-        self.order.push_back(key.clone());
-        self.cache.insert(key, image);
+        if let Some(previous) = self.cache.insert(key.clone(), image) {
+            self.bytes = self.bytes.saturating_sub(image_bytes(&previous));
+            self.order.retain(|k| *k != key);
+        }
+        self.bytes += size;
+        self.order.push_back(key);
     }
 
 
@@ -173,7 +220,7 @@ impl Controller {
         self.images.inflight.remove(&key);
         let waiters = self.images.waiters.remove(&key).unwrap_or_default();
         let Some(pixels) = pixels else {
-            self.images.failed.insert(key);
+            self.images.failed.insert(key, std::time::Instant::now());
             if kind == ImageKind::Logo && waiters.iter().any(|w| matches!(w, ImageSlot::Named)) {
                 self.browse_logo_failed(&url);
                 self.start_logo_failed(&url);
@@ -198,7 +245,7 @@ impl Controller {
                 ImageSlot::Episode { model, index, label } => {
                     if let Some(model) = model.upgrade()
                         && let Some(mut row) = model.row_data(index)
-                        && row.label.as_str() == label
+                        && episode_key(&row) == label
                     {
                         row.thumb = image.clone();
                         row.has_thumb = true;

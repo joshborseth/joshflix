@@ -296,7 +296,9 @@ export component PlayerOverlay inherits Rectangle {
             Text {
                 text: root.next-countdown >= 0
                     ? "Playing in " + root.next-countdown + "s · OK to play now"
-                    : (root.next-focused ? "Press OK to play" : "Press Up to choose");
+                    : !root.has-next
+                        ? (root.next-focused ? "Press OK to go back" : "")
+                        : (root.next-focused ? "Press OK to play" : "Press Up to choose");
                 color: Theme.text-muted;
                 font-size: Theme.text-sm;
             }

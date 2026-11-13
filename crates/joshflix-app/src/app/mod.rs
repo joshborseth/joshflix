@@ -5,6 +5,7 @@
 //! tokio runtime and reports back with [`Controller::spawn`], which hops to
 //! the UI thread through `slint::invoke_from_event_loop`.
 
+mod actions;
 mod browse;
 mod detail;
 mod dialog;
@@ -63,6 +64,8 @@ pub enum Key {
     Up,
     Down,
     Ok,
+    /// OK released (OK itself waits for this on cards: held, it opens the action sheet).
+    OkUp,
     Back,
     Backspace,
     Menu,
@@ -87,7 +90,7 @@ impl Key {
     /// Parse the strings `app.slint` sends. Returns (key, is_repeat).
     pub fn parse(raw: &str) -> Option<(Self, bool)> {
         let (base, repeat) = match raw.strip_suffix('+') {
-            Some(base) if base == "left" || base == "right" => (base, true),
+            Some(base) if base == "left" || base == "right" || base == "ok" => (base, true),
             _ => (raw, false),
         };
         let key = match base {
@@ -96,6 +99,7 @@ impl Key {
             "up" => Self::Up,
             "down" => Self::Down,
             "ok" => Self::Ok,
+            "okup" => Self::OkUp,
             "back" => Self::Back,
             "backspace" => Self::Backspace,
             "menu" => Self::Menu,
@@ -123,6 +127,9 @@ impl Key {
         Some((key, repeat))
     }
 }
+
+/// How long "Press Back again to exit" waits for the second Back.
+const EXIT_WINDOW: Duration = Duration::from_millis(2500);
 
 /// Top-level sections reachable from the rail, in rail order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -225,6 +232,15 @@ pub struct Controller {
     pub pending_compat_save: bool,
     /// Bumped to invalidate in-flight next-episode lookups.
     pub autoplay_generation: u64,
+    /// The app is in the background (Android paused it).
+    pub backgrounded: bool,
+    /// OK went down on a card: `Some(true)` once held long enough for the action sheet.
+    ok_pending: Option<bool>,
+    /// Back on Home's rail asked to exit: a second Back soon after leaves.
+    exit_armed_at: Option<std::time::Instant>,
+    menu_target: Option<actions::MenuTarget>,
+    /// The player's track menu rows.
+    track_menu_model: Rc<VecModel<crate::TrackItem>>,
     toast_timer: slint::Timer,
     tick_timer: slint::Timer,
     pub update_available: Option<joshflix_core::update::AvailableUpdate>,
@@ -272,6 +288,11 @@ impl Controller {
             dialog: None,
             pending_compat_save: false,
             autoplay_generation: 0,
+            backgrounded: false,
+            ok_pending: None,
+            exit_armed_at: None,
+            menu_target: None,
+            track_menu_model: Rc::new(VecModel::default()),
             toast_timer: slint::Timer::default(),
             tick_timer: slint::Timer::default(),
             update_available: None,
@@ -399,6 +420,9 @@ impl Controller {
         if self.player.is_some() {
             self.stop_playback(true);
         }
+        if self.pairing_open() {
+            self.close_settings_pairing();
+        }
         self.section = section;
         self.rail_index = section.index();
         self.back_stack.clear();
@@ -433,7 +457,7 @@ impl Controller {
         match self.back_stack.pop() {
             Some(Screen::Detail) => {
                 self.set_screen(Screen::Detail);
-                self.refresh_detail_progress();
+                self.refresh_detail_after_playback();
             }
             Some(Screen::Player) => self.set_screen(Screen::Player),
             Some(other) => {
@@ -441,6 +465,15 @@ impl Controller {
                 self.refresh_section();
             }
             None => self.go_section(self.section),
+        }
+    }
+
+    /// Re-read Continue Watching and My List for the section on screen.
+    pub(super) fn refresh_local_rows(&mut self) {
+        match self.section {
+            Section::Home | Section::Movies | Section::Shows => self.show_browse(self.section),
+            Section::MyList => self.show_mylist(),
+            _ => {}
         }
     }
 
@@ -466,6 +499,16 @@ impl Controller {
     /// (Back on Home exits the app).
     pub fn on_key(&mut self, raw: &str) -> bool {
         let Some((key, repeat)) = Key::parse(raw) else { return false };
+        if let Some(handled) = self.ok_hold_key(key, repeat) {
+            return handled;
+        }
+        self.dispatch_key(key, repeat)
+    }
+
+    fn dispatch_key(&mut self, key: Key, repeat: bool) -> bool {
+        if matches!(key, Key::OkUp) || (key == Key::Ok && repeat) {
+            return true;
+        }
         if self.dialog.is_some() {
             return self.dialog_key(key);
         }
@@ -522,9 +565,12 @@ impl Controller {
                 if self.section != Section::Home {
                     self.go_section(Section::Home);
                     self.focus_rail();
-                } else {
+                } else if self.exit_armed_at.is_some_and(|t| t.elapsed() < EXIT_WINDOW) {
                     // Let Android close the app.
                     return false;
+                } else {
+                    self.exit_armed_at = Some(std::time::Instant::now());
+                    self.toast("Press Back again to exit");
                 }
             }
             _ => {}
@@ -535,8 +581,13 @@ impl Controller {
     /// The activity went to the background (or came back).
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
     pub fn on_app_visibility(&mut self, visible: bool) {
+        self.backgrounded = !visible;
         if !visible {
             self.pause_for_background();
+        } else if self.player.as_mut().is_some_and(|p| std::mem::take(&mut p.reconnect_on_return)) {
+            self.reconnect("the stream dropped");
+        } else if self.player.is_some() {
+            self.platform.keep_screen_on(true);
         }
     }
 

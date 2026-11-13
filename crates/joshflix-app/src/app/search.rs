@@ -29,6 +29,16 @@ pub struct SearchCtl {
 const CARET_BLINK: Duration = Duration::from_millis(530);
 
 impl SearchCtl {
+    pub(super) fn focused_item(&self) -> Option<&RowItem> {
+        if self.keyboard_active {
+            return None;
+        }
+        let row = self.rows.get(self.row)?;
+        row.items.get(row.focused)
+    }
+}
+
+impl SearchCtl {
     pub fn new() -> Self {
         Self {
             query: String::new(),
@@ -191,14 +201,8 @@ impl Controller {
                         self.query_changed();
                     }
                 }
-                Key::Back => {
-                    if !self.search.query.is_empty() {
-                        self.search.query.pop();
-                        self.query_changed();
-                    } else {
-                        return self.focus_rail();
-                    }
-                }
+                // Back leaves (the query stays); the ⌫ key deletes.
+                Key::Back => return self.focus_rail(),
                 _ => {}
             }
             self.push_search();

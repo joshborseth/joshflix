@@ -85,7 +85,7 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     #[cfg(target_os = "android")]
     screen_colors::spawn(&server, video_surface::sample_screen);
     let services = Services {
-        cinemeta: Cinemeta::new(http.clone()),
+        cinemeta: Cinemeta::new(http.clone()).with_cache_dir(platform.cache_dir().join("catalogs")),
         subtitles: OpenSubtitles::new(http.clone()),
         images: ImageLoader::new(http.clone(), platform.cache_dir().join("artwork")),
         relay: Relay::new(http.clone(), server.clone()),
