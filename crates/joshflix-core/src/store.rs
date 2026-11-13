@@ -55,6 +55,8 @@ pub struct Settings {
     /// The audio language last picked in the player (mpv `alang`), kept for
     /// the next episode and title.
     pub audio_language: Option<String>,
+    /// Launches that showed the "hold OK for more options" tip.
+    pub hold_tips_shown: u8,
 }
 
 impl Default for Settings {
@@ -74,6 +76,7 @@ impl Default for Settings {
             video_compat_mode: None,
             dismissed_update_code: None,
             audio_language: None,
+            hold_tips_shown: 0,
         }
     }
 }
@@ -122,6 +125,10 @@ pub struct Progress {
     pub up_next: bool,
     #[serde(default)]
     pub last_source: Option<LastSource>,
+    /// Removed from Continue Watching; the resume point stays. Playing it
+    /// again saves a fresh record without this.
+    #[serde(default)]
+    pub hidden: bool,
 }
 
 impl Progress {
@@ -238,6 +245,22 @@ impl Store {
         self.put(PROGRESS, &progress.video.video_id(), &progress)
     }
 
+    /// Save without making it the newest record (marking an older episode
+    /// watched mustn't move a show's place).
+    pub fn save_progress_keep_time(&self, mut progress: Progress) -> Result<()> {
+        progress.updated_at = self.progress(&progress.video)?.map_or(1, |p| p.updated_at);
+        self.put(PROGRESS, &progress.video.video_id(), &progress)
+    }
+
+    /// Take a title off Continue Watching, keeping its resume point.
+    pub fn hide_from_continue(&self, meta_id: &str) -> Result<()> {
+        let Some(mut latest) = self.series_progress(meta_id)?.into_iter().max_by_key(|p| p.updated_at) else {
+            return Ok(());
+        };
+        latest.hidden = true;
+        self.put(PROGRESS, &latest.video.video_id(), &latest)
+    }
+
     pub fn remove_progress(&self, video: &VideoRef) -> Result<()> {
         self.remove(PROGRESS, &video.video_id())
     }
@@ -261,7 +284,7 @@ impl Store {
         }
         let mut rows: Vec<Progress> = latest
             .into_values()
-            .filter(|p| p.is_in_progress() || p.up_next)
+            .filter(|p| !p.hidden && (p.is_in_progress() || p.up_next))
             .collect();
         rows.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
         rows.truncate(limit);
@@ -350,6 +373,7 @@ mod tests {
             updated_at: 0,
             up_next: false,
             last_source: None,
+            hidden: false,
         }
     }
 

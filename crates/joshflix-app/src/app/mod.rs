@@ -335,6 +335,17 @@ impl Controller {
         }
         if self.settings.onboarding_done && self.settings.has_rd_key() {
             self.go_section(Section::Home);
+            // The action sheet has no button: say how to reach it, for the first few launches.
+            if self.settings.hold_tips_shown < 3 {
+                self.save_settings(|s| s.hold_tips_shown += 1);
+                slint::Timer::single_shot(Duration::from_secs(4), || {
+                    with_controller(|c| {
+                        if c.dialog.is_none() && c.screen == Screen::Browse {
+                            c.toast("Tip: hold OK on a title for more options");
+                        }
+                    });
+                });
+            }
             self.refresh_account_silently();
             self.check_for_update(false);
         } else {

@@ -1,4 +1,4 @@
-import { Theme, Icons } from "theme.slint";
+import { Theme, Icons, Press } from "theme.slint";
 import { EpisodeCard, DetailButton } from "types.slint";
 import { PillButton, Chip, Spinner, ProgressBar } from "components.slint";
 import { CardGlow } from "glow.slint";
@@ -29,7 +29,7 @@ component EpisodeTile inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: 97px;
-                transform-scale: root.focused ? Theme.focus-scale : 1.0;
+                transform-scale: root.focused ? (Press.down ? 1.02 : Theme.focus-scale) : 1.0;
                 transform-origin: { x: self.width / 2, y: self.height / 2 };
                 animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 

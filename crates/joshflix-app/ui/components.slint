@@ -1,4 +1,4 @@
-import { Theme, Icons } from "theme.slint";
+import { Theme, Icons, Press } from "theme.slint";
 import { Poster, Row, KeyCap, TrackItem } from "types.slint";
 import { CardGlow, PillGlow } from "glow.slint";
 
@@ -29,7 +29,7 @@ export component PosterCard inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: Theme.poster-h;
-                transform-scale: root.focused ? Theme.focus-scale : 1.0;
+                transform-scale: root.focused ? (Press.down ? 1.02 : Theme.focus-scale) : 1.0;
                 transform-origin: { x: self.width / 2, y: self.height / 2 };
                 animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 
@@ -144,7 +144,7 @@ export component WideCard inherits Rectangle {
                 y: 0;
                 width: parent.width;
                 height: Theme.wide-h;
-                transform-scale: root.focused ? Theme.focus-scale : 1.0;
+                transform-scale: root.focused ? (Press.down ? 1.02 : Theme.focus-scale) : 1.0;
                 transform-origin: { x: self.width / 2, y: self.height / 2 };
                 animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 

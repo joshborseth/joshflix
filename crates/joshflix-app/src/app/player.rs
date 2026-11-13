@@ -126,6 +126,8 @@ pub struct PlayerCtl {
     pub reconnect_on_return: bool,
     /// The user picked a subtitle track from the menu.
     subtitle_user_choice: bool,
+    /// Back hid the controls while paused.
+    overlay_dismissed: bool,
 }
 
 impl PlayerCtl {
@@ -226,6 +228,7 @@ impl Controller {
             reconnects: 0,
             reconnect_on_return: false,
             subtitle_user_choice: false,
+            overlay_dismissed: false,
         });
         let (title, subtitle) = super::video_title(&request.context.name, &request.video, request.context.episode_title.as_deref());
         let state = PlayerState::get(&self.ui);
@@ -421,6 +424,7 @@ impl Controller {
                 } else {
                     let p = self.player.as_mut().expect("player");
                     p.overlay_until = Instant::now() + Duration::from_secs(OVERLAY_SECS);
+                    p.overlay_dismissed = false;
                 }
             }
             PlayerEvent::Buffering(state) => p.buffering = state,
@@ -547,7 +551,10 @@ impl Controller {
         // Until the first frame, the start cover shows progress and errors.
         let live = p.started && p.pending_next.is_none();
         let overlay = live
-            && (Instant::now() < p.overlay_until || p.paused || p.menu.is_some() || p.seek_target.is_some() || p.error.is_some());
+            && ((!p.overlay_dismissed && (Instant::now() < p.overlay_until || p.paused))
+                || p.menu.is_some()
+                || p.seek_target.is_some()
+                || p.error.is_some());
         if p.overlay_shown != Some(overlay) {
             p.overlay_shown = Some(overlay);
             if let Some(player) = self.video.player() {
@@ -788,6 +795,7 @@ impl Controller {
             updated_at: 0,
             up_next: false,
             last_source: Some(LastSource { stream: p.source.clone() }),
+            hidden: false,
         };
         let watched = progress.is_watched();
         // Queue the next episode for Continue Watching.
@@ -804,6 +812,7 @@ impl Controller {
             updated_at: 0,
             up_next: true,
             last_source: None,
+            hidden: false,
         });
         // Database writes fsync; keep them off the thread that renders video.
         let store = self.svc.store.clone();
@@ -979,6 +988,7 @@ impl Controller {
 
     fn show_overlay(&mut self) {
         if let Some(p) = self.player.as_mut() {
+            p.overlay_dismissed = false;
             p.overlay_until = Instant::now() + Duration::from_secs(OVERLAY_SECS);
         }
     }
@@ -1119,7 +1129,7 @@ impl Controller {
         if !p.started || p.pending_next.is_some() {
             return self.starting_key(key);
         }
-        let overlay_was_visible = Instant::now() < p.overlay_until || p.paused;
+        let overlay_was_visible = (Instant::now() < p.overlay_until || p.paused) && !p.overlay_dismissed;
 
         // Remote media keys work regardless of focus.
         match key {
@@ -1231,9 +1241,10 @@ impl Controller {
                 } else if p.next.autoplay_armed {
                     p.next.autoplay_armed = false;
                     p.next.dismissed = true;
-                } else if overlay_was_visible && !p.paused && p.error.is_none() {
-                    // First Back hides the controls; the next one leaves.
+                } else if overlay_was_visible && p.error.is_none() {
+                    // First Back hides the controls (a pause stays paused); the next one leaves.
                     p.overlay_until = Instant::now();
+                    p.overlay_dismissed = p.paused;
                     p.zone = 0;
                     self.push_player();
                     return true;

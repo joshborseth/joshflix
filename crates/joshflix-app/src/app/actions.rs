@@ -23,16 +23,19 @@ impl Controller {
         match (key, repeat) {
             (Key::Ok, false) if self.ok_can_hold() => {
                 self.ok_pending = Some(false);
+                self.set_pressed(true);
                 Some(true)
             }
             (Key::Ok, true) => {
                 if self.ok_pending == Some(false) {
                     self.ok_pending = Some(true);
+                    self.set_pressed(false);
                     self.open_action_sheet();
                 }
                 Some(true)
             }
             (Key::OkUp, _) => {
+                self.set_pressed(false);
                 if self.ok_pending.take() == Some(false) {
                     return Some(self.dispatch_key(Key::Ok, false));
                 }
@@ -40,14 +43,23 @@ impl Controller {
             }
             (Key::Menu, _) if self.ok_can_hold() => {
                 self.ok_pending = None;
+                self.set_pressed(false);
                 self.open_action_sheet();
                 Some(true)
             }
             _ => {
-                self.ok_pending = None;
+                // Another key before OK's release: the OK still counts, first.
+                if self.ok_pending.take() == Some(false) {
+                    self.set_pressed(false);
+                    self.dispatch_key(Key::Ok, false);
+                }
                 None
             }
         }
+    }
+
+    fn set_pressed(&self, down: bool) {
+        crate::Press::get(&self.ui).set_down(down);
     }
 
     fn ok_can_hold(&self) -> bool {
@@ -100,6 +112,8 @@ impl Controller {
                 && self.svc.store.progress(&VideoRef::movie(&card.id)).ok().flatten().is_some_and(|p| p.is_watched()));
         if card.kind == MediaKind::Movie && !watched {
             buttons.push(("Mark as watched", icons.get_check(), buttons.is_empty(), DialogAction::MarkWatched));
+        } else if card.kind == MediaKind::Movie {
+            buttons.push(("Mark as unwatched", icons.get_close(), buttons.is_empty(), DialogAction::MarkUnwatched));
         }
         let in_list = self.svc.store.in_library(&card.id).unwrap_or(false);
         buttons.push(if in_list {
@@ -118,17 +132,7 @@ impl Controller {
         let store = self.svc.store.clone();
         let result = match (action, target) {
             (DialogAction::RemoveFromContinue, MenuTarget::Card(card)) => {
-                // Older in-progress episodes would surface next: clear them all.
-                let mut result = Ok(());
-                for _ in 0..64 {
-                    let entry = store.continue_watching(500).ok().and_then(|cw| cw.into_iter().find(|p| p.video.meta_id == card.id));
-                    let Some(entry) = entry else { break };
-                    result = store.remove_progress(&entry.video);
-                    if result.is_err() {
-                        break;
-                    }
-                }
-                result.map(|()| "Removed from Continue Watching")
+                store.hide_from_continue(&card.id).map(|()| "Removed from Continue Watching")
             }
             (DialogAction::MarkWatched, MenuTarget::Card(card)) => {
                 let progress = card_progress(&card);
@@ -151,8 +155,12 @@ impl Controller {
                     updated_at: 0,
                     up_next: false,
                     last_source: existing.and_then(|p| p.last_source),
+                    hidden: false,
                 };
-                store.save_progress(watched(progress)).map(|()| "Marked as watched")
+                self.mark_episode_watched(progress)
+            }
+            (DialogAction::MarkUnwatched, MenuTarget::Card(card)) => {
+                store.remove_progress(&VideoRef::movie(&card.id)).map(|()| "Marked as unwatched")
             }
             (DialogAction::MarkUnwatched, MenuTarget::Episode { video }) => {
                 store.remove_progress(&video).map(|()| "Marked as unwatched")
@@ -175,6 +183,42 @@ impl Controller {
             Screen::Browse | Screen::Mylist => self.refresh_local_rows(),
             _ => {}
         }
+    }
+}
+
+impl Controller {
+    /// An episode marked watched. The newest one moves the show on (its next
+    /// aired episode becomes Up next, as after playback); an older one keeps
+    /// the show's place in Continue Watching and on the Play button.
+    fn mark_episode_watched(&mut self, progress: Progress) -> joshflix_core::Result<&'static str> {
+        let store = self.svc.store.clone();
+        let records = store.series_progress(&progress.video.meta_id)?;
+        let newest = records.iter().max_by_key(|p| p.updated_at).is_none_or(|p| p.video == progress.video);
+        if !newest {
+            return store.save_progress_keep_time(watched(progress)).map(|()| "Marked as watched");
+        }
+        let next = self.detail.as_ref().and_then(|d| d.meta.clone()).and_then(|meta| {
+            let (s, e) = (progress.video.season?, progress.video.episode?);
+            meta.next_episode(s, e).filter(|n| n.is_released(&crate::format::today())).cloned()
+        });
+        let up_next = next.map(|n| Progress {
+            video: VideoRef::episode(&progress.video.meta_id, n.season, n.episode),
+            episode_title: Some(n.title),
+            thumbnail: n.thumbnail,
+            position_secs: 0.0,
+            duration_secs: 0.0,
+            up_next: true,
+            last_source: None,
+            ..progress.clone()
+        });
+        store.save_progress(watched(progress))?;
+        if let Some(next) = up_next
+            && store.progress(&next.video)?.is_none_or(|existing| existing.up_next)
+        {
+            std::thread::sleep(std::time::Duration::from_millis(2)); // newer than the watched one
+            store.save_progress(next)?;
+        }
+        Ok("Marked as watched")
     }
 }
 
@@ -204,6 +248,7 @@ fn card_progress(card: &RowItem) -> Progress {
         updated_at: 0,
         up_next: false,
         last_source: None,
+        hidden: false,
     }
 }
 
