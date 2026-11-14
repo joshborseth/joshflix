@@ -247,6 +247,8 @@ impl Controller {
             queued_prev_at: None,
             marked_prev_at: None,
             marked_earlier: Vec::new(),
+            marked_at: None,
+            marked_was_up_next: false,
         })
     }
 
@@ -328,6 +330,8 @@ fn card_progress(card: &RowItem) -> Progress {
         queued_prev_at: None,
         marked_prev_at: None,
         marked_earlier: Vec::new(),
+        marked_at: None,
+        marked_was_up_next: false,
     }
 }
 

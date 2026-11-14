@@ -240,7 +240,15 @@ impl Controller {
                         self.search.recent_focus = Some(0);
                         self.search.recent_from_keyboard = true;
                         // Results unscrolled, so the chips above them show.
-                        self.search.row = self.search.rows.iter().position(RowCtl::is_navigable).unwrap_or(0);
+                        let first = self.search.rows.iter().position(RowCtl::is_navigable).unwrap_or(0);
+                        self.search.row = first;
+                        if let Some(row) = self.search.rows.get_mut(first)
+                            && row.focused != 0
+                        {
+                            row.focused = 0;
+                            let data = row.to_row();
+                            self.search.model.set_row_data(first, data);
+                        }
                     }
                 }
                 Key::Down => {

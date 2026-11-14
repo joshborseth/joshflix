@@ -148,6 +148,13 @@ pub struct Progress {
     /// Episodes a "Mark earlier episodes as watched" from here marked too.
     #[serde(default)]
     pub marked_earlier: Vec<VideoRef>,
+    /// When "Mark as watched" wrote this record (a catch-up's records share
+    /// it; a later playback writes a record without it).
+    #[serde(default)]
+    pub marked_at: Option<u64>,
+    /// It was the show's Up next before it was marked.
+    #[serde(default)]
+    pub marked_was_up_next: bool,
 }
 
 /// An aired episode after the one marked watched (see [`Store::mark_watched`]).
@@ -330,6 +337,7 @@ impl Store {
             let mut table = txn.open_table(PROGRESS)?;
             let series = table_series(&table, &template.video.meta_id)?;
             let hidden = series.iter().max_by_key(|p| p.updated_at).is_some_and(|p| p.hidden);
+            let marked_at = now();
             // Earlier episodes become history: watched, but not the place.
             for before in earlier {
                 let record = series.iter().find(|p| p.video == before.video);
@@ -338,6 +346,7 @@ impl Store {
                 }
                 let mut done = watched_record(before.clone(), record, hidden);
                 done.updated_at = record.map_or(1, |r| r.updated_at);
+                done.marked_at = Some(marked_at);
                 table.insert(done.video.video_id().as_str(), encode(&done)?.as_slice())?;
             }
             let existing = series.iter().find(|p| p.video == template.video);
@@ -350,6 +359,7 @@ impl Store {
             let at_place = existing.is_some_and(|e| e.up_next)
                 || place.is_none_or(|p| p.updated_at <= mine || comes_after(&template.video, &p.video));
             let mut watched = watched_record(template, existing, hidden);
+            watched.marked_at = Some(marked_at);
             // One "Mark as unwatched" on this episode undoes the whole catch-up.
             watched.marked_earlier = earlier
                 .iter()
@@ -404,7 +414,28 @@ impl Store {
             }
             // A catch-up ("Mark earlier episodes as watched") is undone with it.
             for earlier in &record.marked_earlier {
-                let Some(done) = series.iter().find(|p| p.video == *earlier && p.is_watched()) else { continue };
+                // Only records this catch-up wrote: a later real watch stays.
+                let Some(done) = series
+                    .iter()
+                    .find(|p| p.video == *earlier && p.is_watched() && p.marked_at.is_some() && p.marked_at == record.marked_at)
+                else {
+                    continue;
+                };
+                if done.marked_was_up_next {
+                    let restored = Progress {
+                        position_secs: 0.0,
+                        duration_secs: 0.0,
+                        up_next: true,
+                        updated_at: done.marked_prev_at.unwrap_or(done.updated_at),
+                        marked_at: None,
+                        marked_was_up_next: false,
+                        marked_prev_at: None,
+                        marked_from: None,
+                        ..done.clone()
+                    };
+                    table.insert(earlier.video_id().as_str(), encode(&restored)?.as_slice())?;
+                    continue;
+                }
                 match done.marked_from.filter(|at| *at > 0.0) {
                     Some(at) => {
                         let restored = Progress {
@@ -413,6 +444,8 @@ impl Store {
                             marked_from: None,
                             marked_prev_at: None,
                             marked_earlier: Vec::new(),
+                            marked_at: None,
+                            marked_was_up_next: false,
                             ..done.clone()
                         };
                         table.insert(earlier.video_id().as_str(), encode(&restored)?.as_slice())?;
@@ -422,6 +455,24 @@ impl Store {
                     }
                 }
             }
+            if record.marked_was_up_next {
+                // It was the queued Up next: queued again, at its old time.
+                let restored = Progress {
+                    position_secs: 0.0,
+                    duration_secs: 0.0,
+                    up_next: true,
+                    updated_at: record.marked_prev_at.unwrap_or(record.updated_at),
+                    marked_at: None,
+                    marked_was_up_next: false,
+                    marked_prev_at: None,
+                    marked_from: None,
+                    marked_earlier: Vec::new(),
+                    queued: None,
+                    queued_prev_at: None,
+                    ..record.clone()
+                };
+                table.insert(video.video_id().as_str(), encode(&restored)?.as_slice())?;
+            } else {
             match record.marked_from.filter(|at| *at > 0.0) {
                 Some(at) => {
                     let restored = Progress {
@@ -430,6 +481,8 @@ impl Store {
                         marked_from: None,
                         marked_prev_at: None,
                         marked_earlier: Vec::new(),
+                        marked_at: None,
+                        marked_was_up_next: false,
                         queued: None,
                         queued_prev_at: None,
                         ..record.clone()
@@ -439,6 +492,7 @@ impl Store {
                 None => {
                     table.remove(video.video_id().as_str())?;
                 }
+            }
             }
             if let Some(mut newest) = table_series(&table, &video.meta_id)?.into_iter().max_by_key(|p| p.updated_at)
                 && newest.hidden != hidden_now
@@ -600,7 +654,9 @@ fn watched_record(template: Progress, existing: Option<&Progress>, hidden: bool)
         up_next: false,
         hidden,
         marked_from: real.filter(|e| e.is_in_progress()).map(|e| e.position_secs),
-        marked_prev_at: real.map(|e| e.updated_at),
+        marked_prev_at: existing.map(|e| e.updated_at),
+        marked_was_up_next: existing.is_some_and(|e| e.up_next),
+        marked_at: Some(now()),
         last_source: existing.and_then(|e| e.last_source.clone()).or(template.last_source.clone()),
         queued: None,
         queued_prev_at: None,
@@ -649,6 +705,8 @@ fn move_on(
                     marked_from: None,
                     marked_prev_at: None,
                     marked_earlier: Vec::new(),
+                    marked_at: None,
+                    marked_was_up_next: false,
                     queued: None,
                     queued_prev_at: None,
                     ..finished.clone()
@@ -709,6 +767,8 @@ mod tests {
             queued_prev_at: None,
             marked_prev_at: None,
             marked_earlier: Vec::new(),
+            marked_at: None,
+            marked_was_up_next: false,
         }
     }
 
@@ -966,6 +1026,36 @@ mod tests {
         let after_two: Vec<(u32, u32)> = (3..=10).map(|n| (1, n)).collect();
         store.save_progress_and_queue(progress(e(2), 1000.0, 1000.0), &later("tt1", &after_two)).unwrap();
         assert_eq!(cw_ids(&store), ["tt1:1:8"]);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn undoing_a_catch_up_brings_back_the_up_next_it_marked() {
+        let (store, dir) = temp_store();
+        let e = |n| VideoRef::episode("tt1", 1, n);
+        store.save_progress_and_queue(progress(e(3), 1000.0, 1000.0), &later("tt1", &[(1, 4), (1, 5), (1, 6)])).unwrap();
+        assert_eq!(cw_ids(&store), ["tt1:1:4"]);
+        pause();
+        let earlier: Vec<Progress> = (1..6).map(|n| progress(e(n), 0.0, 0.0)).collect();
+        store.mark_watched(progress(e(6), 0.0, 0.0), &earlier, &later("tt1", &[(1, 7)])).unwrap();
+        assert_eq!(cw_ids(&store), ["tt1:1:7"]);
+        store.unmark_watched(&e(6)).unwrap();
+        assert_eq!(cw_ids(&store), ["tt1:1:4"], "E4 is Up next again");
+        assert!(store.progress(&e(3)).unwrap().unwrap().is_watched(), "E3 was watched before: untouched");
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn undoing_a_catch_up_keeps_a_later_real_watch() {
+        let (store, dir) = temp_store();
+        let e = |n| VideoRef::episode("tt1", 1, n);
+        let earlier: Vec<Progress> = (1..3).map(|n| progress(e(n), 0.0, 0.0)).collect();
+        store.mark_watched(progress(e(3), 0.0, 0.0), &earlier, &later("tt1", &[(1, 4)])).unwrap();
+        pause();
+        store.save_progress(progress(e(2), 1000.0, 1000.0)).unwrap(); // rewatched E2 for real
+        store.unmark_watched(&e(3)).unwrap();
+        assert!(store.progress(&e(1)).unwrap().is_none());
+        assert!(store.progress(&e(2)).unwrap().unwrap().is_watched(), "the real watch stays");
         std::fs::remove_dir_all(dir).unwrap();
     }
 

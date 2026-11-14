@@ -840,6 +840,8 @@ impl Controller {
             queued_prev_at: None,
             marked_prev_at: None,
             marked_earlier: Vec::new(),
+            marked_at: None,
+            marked_was_up_next: false,
         };
         let watched = progress.is_watched();
         // Finished: the show moves on to the next episode in Continue Watching.
