@@ -241,6 +241,7 @@ export component DetailScreen inherits Rectangle {
             spacing: 10px;
             alignment: start;
             for button[i] in root.buttons: PillButton {
+                grow-right: i == 0;
                 label: button.label;
                 icon: button.icon;
                 primary: button.primary;

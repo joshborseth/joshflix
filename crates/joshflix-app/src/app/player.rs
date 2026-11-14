@@ -743,7 +743,8 @@ impl Controller {
             p.drops_logged_at = Instant::now();
         }
         // Never spin forever: say what went wrong instead.
-        if p.error.is_none() && !p.video_shown && p.opened_at.elapsed() > OPEN_TIMEOUT {
+        // (Not while a reopen waits for the network: its timer decides.)
+        if p.error.is_none() && !p.video_shown && !p.reconnect_waiting && p.opened_at.elapsed() > OPEN_TIMEOUT {
             tracing::warn!("stream didn't open within {OPEN_TIMEOUT:?} (last mpv error: {:?})", p.last_mpv_error);
             let detail = p.last_mpv_error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default();
             p.error = Some(format!("The stream didn't open{detail}. Press Back and try another source."));
@@ -752,6 +753,7 @@ impl Controller {
         }
         if p.error.is_none()
             && !p.started
+            && !p.reconnect_waiting
             && !p.paused
             && p.cache_ahead >= 10.0
             && p.loaded_at.is_some_and(|t| t.elapsed() > DECODE_TIMEOUT)
@@ -834,6 +836,8 @@ impl Controller {
             last_source: Some(LastSource { stream: p.source.clone() }),
             hidden: false,
             marked_from: None,
+            queued: None,
+            queued_prev_at: None,
         };
         let watched = progress.is_watched();
         // Queue the next episode for Continue Watching.
@@ -852,18 +856,16 @@ impl Controller {
             last_source: None,
             hidden: false,
             marked_from: None,
+            queued: None,
+            queued_prev_at: None,
         });
         // Database writes fsync; keep them off the thread that renders video.
         let store = self.svc.store.clone();
         let write = tokio::task::spawn_blocking(move || {
-            if let Err(e) = store.save_progress(progress) {
+            // One transaction; the finished record remembers the Up next it
+            // queued, so Mark as unwatched can take it back.
+            if let Err(e) = store.save_progress_and_queue(progress, up_next) {
                 tracing::warn!("save progress: {e}");
-            }
-            if let Some(next) = up_next
-                && store.progress(&next.video).ok().flatten().is_none_or(|existing| existing.up_next)
-            {
-                std::thread::sleep(Duration::from_millis(2)); // keep it newer than the finished one
-                let _ = store.save_progress(next);
             }
         });
         // The page the player returned to read the store before this landed.
@@ -1189,7 +1191,7 @@ impl Controller {
             self.pop_screen();
             return true;
         };
-        if !p.started || p.pending_next.is_some() {
+        if !p.started || p.pending_next.is_some() || p.reconnecting() {
             return self.starting_key(key);
         }
         let overlay_was_visible = (Instant::now() < p.overlay_until || p.paused) && !p.overlay_dismissed;

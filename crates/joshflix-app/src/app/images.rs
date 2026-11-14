@@ -70,6 +70,7 @@ pub struct ImageCache {
     failed: HashMap<String, std::time::Instant>,
     waiters: HashMap<String, Vec<ImageSlot>>,
     net: Arc<Semaphore>,
+    net_named: Arc<Semaphore>,
     decode_cards: Arc<Semaphore>,
     decode_large: Arc<Semaphore>,
     /// Bumped when the browse hero moves on (see `backdrops_moved_on`).
@@ -117,6 +118,7 @@ impl ImageCache {
             failed: HashMap::new(),
             waiters: HashMap::new(),
             net: Arc::new(Semaphore::new(8)),
+            net_named: Arc::new(Semaphore::new(2)),
             // Few concurrent decodes keep TV CPUs responsive while scrolling.
             // Backdrops and logos decode on their own permit, so cards never
             // queue behind a 1080p backdrop for a title already scrolled past.
@@ -162,6 +164,7 @@ impl ImageCache {
             }
             self.failed.remove(&key);
         }
+        let slot_is_named = matches!(kind, ImageKind::Backdrop | ImageKind::Logo);
         self.waiters.entry(key.clone()).or_default().push(slot);
         let generation = self.backdrop_generation.load(Ordering::Relaxed);
         if !self.inflight.insert(key.clone()) {
@@ -175,7 +178,9 @@ impl ImageCache {
         let (w, h) = ((w * self.scale).ceil() as u32, (h * self.scale).ceil() as u32);
         let radius = kind.card_radius().map(|r| r * self.scale);
         let loader = self.loader.clone();
-        let net = self.net.clone();
+        // Hero artwork has its own small download lane, so it never queues
+        // behind dozens of posters.
+        let net = if slot_is_named { self.net_named.clone() } else { self.net.clone() };
         // Logos get their own lane: the hero shows no title until its logo lands.
         let decode = match kind {
             ImageKind::Backdrop => self.decode_large.clone(),

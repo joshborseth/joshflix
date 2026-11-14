@@ -8,7 +8,7 @@ export component PosterCard inherits Rectangle {
     in property <bool> focused;
     in property <bool> show-title: false;
     width: Theme.poster-w;
-    height: Theme.poster-h + (show-title ? 30px : 0px);
+    height: Theme.poster-h + (show-title ? 42px : 0px);
 
     // Culling box: see CULL.
     Rectangle {
@@ -112,7 +112,10 @@ export component PosterCard inherits Rectangle {
                 color: root.focused ? Theme.text : Theme.text-muted;
                 font-size: Theme.text-sm;
                 font-weight: 500;
+                // Two lines: seven columns leave 104px, too little for most titles on one.
+                wrap: word-wrap;
                 overflow: elide;
+                height: 34px;
             }
         }
     }
@@ -313,12 +316,14 @@ export component PillButton inherits Rectangle {
     in property <bool> compact: false;
     // A fixed width with the label on the left (action sheets); 0 = fit the label.
     in property <length> fill-width: 0px;
+    // Grow to the right only (the first button of a row stays on the column edge).
+    in property <bool> grow-right: false;
     property <bool> stretch: fill-width > 0px;
     height: compact ? 30px : 36px;
     width: stretch ? fill-width : content.preferred-width + (compact ? 24px : 32px);
     // Full-width buttons don't grow (they'd stick out of their column); fill and glow show focus.
     transform-scale: focused && !stretch ? 1.05 : 1.0;
-    transform-origin: { x: self.width / 2, y: self.height / 2 };
+    transform-origin: { x: root.grow-right ? 0px : self.width / 2, y: self.height / 2 };
     animate transform-scale { duration: Theme.fast; easing: ease-out-quart; }
 
     PillGlow {
