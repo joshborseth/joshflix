@@ -239,6 +239,8 @@ pub struct Controller {
     /// Back on Home's rail asked to exit: a second Back soon after leaves.
     exit_armed_at: Option<std::time::Instant>,
     menu_target: Option<actions::MenuTarget>,
+    /// Sends settings to the thread that writes them (see `save_settings`).
+    settings_writer: Option<std::sync::mpsc::Sender<Settings>>,
     /// The player's track menu rows.
     track_menu_model: Rc<VecModel<crate::TrackItem>>,
     toast_timer: slint::Timer,
@@ -293,6 +295,7 @@ impl Controller {
             exit_armed_at: None,
             menu_target: None,
             track_menu_model: Rc::new(VecModel::default()),
+            settings_writer: None,
             toast_timer: slint::Timer::default(),
             tick_timer: slint::Timer::default(),
             update_available: None,
@@ -381,13 +384,20 @@ impl Controller {
         self.settings.rd_api_key.clone().filter(|k| !k.trim().is_empty())
     }
 
+    /// Change settings now; the database write (an fsync, tens of ms on TV
+    /// flash) happens on a writer thread, in order. Only the controller
+    /// writes settings, so the copy here is the truth.
     pub fn save_settings(&mut self, change: impl FnOnce(&mut Settings)) {
-        match self.svc.store.update_settings(change) {
-            Ok(settings) => {
-                register_secrets(&settings);
-                self.settings = settings;
-            }
-            Err(e) => self.toast(&format!("Couldn't save settings: {e}")),
+        let mut settings = self.settings.clone();
+        change(&mut settings);
+        if settings == self.settings {
+            return;
+        }
+        register_secrets(&settings);
+        self.settings = settings.clone();
+        let writer = self.settings_writer.get_or_insert_with(|| settings_writer(self.svc.store.clone()));
+        if writer.send(settings).is_err() {
+            self.toast("Couldn't save settings");
         }
     }
 
@@ -613,6 +623,28 @@ impl Controller {
     }
 }
 
+
+/// A thread that writes settings in the order they changed, skipping to the
+/// newest when several queue up.
+fn settings_writer(store: Store) -> std::sync::mpsc::Sender<Settings> {
+    let (tx, rx) = std::sync::mpsc::channel::<Settings>();
+    let spawned = std::thread::Builder::new().name("settings-writer".into()).spawn(move || {
+        while let Ok(mut settings) = rx.recv() {
+            while let Ok(newer) = rx.try_recv() {
+                settings = newer;
+            }
+            if let Err(e) = store.save_settings(&settings) {
+                tracing::warn!("save settings: {e}");
+                let message = format!("Couldn't save settings: {e}");
+                let _ = slint::invoke_from_event_loop(move || with_controller(|c| c.toast(&message)));
+            }
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!("settings writer: {e}");
+    }
+    tx
+}
 
 /// Keep the Real-Debrid key, and the Comet config that embeds it, out of uploaded logs.
 fn register_secrets(settings: &Settings) {

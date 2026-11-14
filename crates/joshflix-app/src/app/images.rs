@@ -77,11 +77,16 @@ pub struct ImageCache {
     /// Per queued backdrop: the generation it was last asked for in.
     backdrop_wanted: HashMap<String, Arc<AtomicU64>>,
     decode_logo: Arc<Semaphore>,
+    /// Decoded images waiting for their frame (see `apply_ready_images`).
+    ready: VecDeque<(String, String, ImageKind, Pixels)>,
+    apply_timer: slint::Timer,
 }
 
 /// Decoded artwork kept for reuse, by bytes (a backdrop is 5–8 MB, a poster 0.3 MB).
 const BUDGET_BYTES: usize = 128 * 1024 * 1024;
 const MAX_BACKDROPS: usize = 8;
+/// About one frame at 60 Hz.
+const APPLY_EVERY: std::time::Duration = std::time::Duration::from_millis(16);
 const RETRY_FAILED: std::time::Duration = std::time::Duration::from_secs(60);
 
 fn image_bytes(image: &Image) -> usize {
@@ -120,6 +125,8 @@ impl ImageCache {
             backdrop_generation: Arc::new(AtomicU64::new(0)),
             backdrop_wanted: HashMap::new(),
             decode_logo: Arc::new(Semaphore::new(1)),
+            ready: VecDeque::new(),
+            apply_timer: slint::Timer::default(),
         }
     }
 
@@ -276,22 +283,51 @@ impl ImageCache {
 
 impl Controller {
     fn image_loaded(&mut self, key: String, url: String, kind: ImageKind, pixels: Result<Pixels, bool>) {
+        if let Ok(pixels) = pixels {
+            // Applied a few per frame: each one is a texture upload in the
+            // next render, and a burst (a row arriving, a season loading)
+            // would otherwise all land in one frame. Stays in flight until then.
+            self.images.ready.push_back((key, url, kind, pixels));
+            if !self.images.apply_timer.running() {
+                self.images.apply_timer.start(slint::TimerMode::Repeated, APPLY_EVERY, || with_controller(Controller::apply_ready_images));
+            }
+            return;
+        }
         self.images.inflight.remove(&key);
         self.images.backdrop_wanted.remove(&key);
         let waiters = self.images.waiters.remove(&key).unwrap_or_default();
-        let pixels = match pixels {
-            Ok(pixels) => pixels,
+        match pixels {
+            Ok(_) => {}
             // Dropped as stale: asking again later loads it.
-            Err(true) => return,
+            Err(true) => {}
             Err(false) => {
                 self.images.failed.insert(key, std::time::Instant::now());
                 if kind == ImageKind::Logo && waiters.iter().any(|w| matches!(w, ImageSlot::Named)) {
                     self.browse_logo_failed(&url);
                     self.start_logo_failed(&url);
                 }
-                return;
             }
-        };
+        }
+    }
+
+    /// Hand out decoded images: up to a few cards' worth per frame, a
+    /// backdrop counting as several.
+    fn apply_ready_images(&mut self) {
+        let mut budget = 3;
+        while budget > 0 {
+            let Some((key, url, kind, pixels)) = self.images.ready.pop_front() else { break };
+            budget -= if kind == ImageKind::Backdrop { 3 } else { 1 };
+            self.apply_image(key, url, kind, pixels);
+        }
+        if self.images.ready.is_empty() {
+            self.images.apply_timer.stop();
+        }
+    }
+
+    fn apply_image(&mut self, key: String, url: String, kind: ImageKind, pixels: Pixels) {
+        self.images.inflight.remove(&key);
+        self.images.backdrop_wanted.remove(&key);
+        let waiters = self.images.waiters.remove(&key).unwrap_or_default();
         let image = Image::from_rgba8(pixels);
         self.images.insert(key, image.clone());
         let mut named = false;
