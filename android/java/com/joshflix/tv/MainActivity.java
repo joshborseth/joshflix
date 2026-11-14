@@ -4,6 +4,7 @@ import android.app.NativeActivity;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
+import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.os.Build;
 import android.os.Bundle;
@@ -12,10 +13,12 @@ import android.os.HandlerThread;
 import android.os.Looper;
 import android.os.Process;
 import android.util.Log;
+import android.view.Gravity;
 import android.view.PixelCopy;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.SurfaceView;
+import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.Toast;
@@ -28,13 +31,18 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 
 /**
- * NativeActivity with two stacked surfaces instead of one window surface.
+ * NativeActivity with stacked surfaces instead of one window surface.
  *
- * <p>The bottom {@link SurfaceView} belongs to mpv, which draws video into it
- * on its own threads. The top one is translucent and carries the Rust UI:
- * NativeActivity's own surface callbacks are attached to it, so the native
- * side sees an ordinary window. Video therefore never passes through the UI's
- * OpenGL context, and losing the UI surface no longer stops the video.
+ * <p>At the bottom are two video {@link SurfaceView}s, of which one is shown
+ * at a time: ExoPlayer's ({@link ExoBridge}), where MediaCodec puts frames
+ * straight onto the TV's video layer, and mpv's, which mpv draws into on its
+ * own threads (the fallback player). The next surface is translucent and
+ * carries the Rust UI: NativeActivity's own surface callbacks are attached
+ * to it, so the native side sees an ordinary window. ExoPlayer's subtitles
+ * ({@link SubtitleOverlay}) are drawn in the window itself, above all of
+ * these surfaces. Video
+ * therefore never passes through the UI's OpenGL context, and losing the UI
+ * surface no longer stops the video.
  *
  * <p>If anything here fails, the activity keeps NativeActivity's single
  * window surface and the app draws video into the UI as before. A version of
@@ -48,6 +56,8 @@ import java.util.concurrent.TimeUnit;
  * <li>the native side reports that video never appeared.</li>
  * </ul>
  * The user can also turn layering off in Settings ({@code single-surface-user}).
+ * ExoPlayer needs the layers. A version stops using it ({@code exo-off}) when
+ * the process died twice while ExoPlayer started a video.
  *
  * <p>The static helpers called by the native side never lock
  * {@code MainActivity.class}: the native side calls them while
@@ -65,6 +75,14 @@ public class MainActivity extends NativeActivity {
     /** "versionCode count" of attempts that died, per kind. */
     private static final String UI_STRIKES = "ui-strikes";
     private static final String VIDEO_STRIKES = "video-surface-strikes";
+    /** "versionCode pid" until ExoPlayer showed its first frame in this process. */
+    private static final String EXO_ATTEMPT = "exo-attempt";
+    private static final String EXO_STRIKES = "exo-strikes";
+    /** Holds the version code whose ExoPlayer starts kept killing the app. */
+    private static final String EXO_OFF = "exo-off";
+    /** Which video layer shows (showVideoLayer). */
+    private static final int LAYER_MPV = 1;
+    private static final int LAYER_EXO = 2;
     /** Attempts that may die before a version stops layering. */
     private static final int MAX_STRIKES = 2;
     /** How long the UI gets to draw its first frame on the layered surface. */
@@ -77,6 +95,10 @@ public class MainActivity extends NativeActivity {
     private static volatile long appVersionCode;
     /** The activity whose surfaces the native side follows. */
     private static volatile MainActivity current;
+    /** ExoPlayer showed a frame in this process: its attempt marker is gone. */
+    private static volatile boolean exoWorked;
+    /** The video layer on screen: LAYER_EXO or LAYER_MPV. */
+    private static volatile int videoLayer = LAYER_EXO;
 
     // Guarded by MainActivity.class.
     private static Surface videoSurface;
@@ -90,6 +112,7 @@ public class MainActivity extends NativeActivity {
      * is released, so no copy reads a released surface.
      */
     private static volatile Surface sampleVideoSurface;
+    private static volatile Surface sampleExoSurface;
     private static volatile Surface sampleUiSurface;
     /** Held around each copy and while a sampled surface goes away. Never with MainActivity.class inside. */
     private static final Object SAMPLE_LOCK = new Object();
@@ -102,6 +125,8 @@ public class MainActivity extends NativeActivity {
     private final Handler handler = new Handler(Looper.getMainLooper());
     private FrameLayout layers;
     private SurfaceView videoView;
+    private SurfaceView exoView;
+    private SubtitleOverlay subtitles;
     private boolean resumed;
 
     @Override
@@ -115,7 +140,9 @@ public class MainActivity extends NativeActivity {
             videoSurface = null;
         }
         sampleVideoSurface = null;
+        sampleExoSurface = null;
         sampleUiSurface = null;
+        videoLayer = LAYER_EXO;
         filesDir = getFilesDir();
         appVersionCode = versionCode();
         boolean layer = decideLayering();
@@ -130,11 +157,21 @@ public class MainActivity extends NativeActivity {
         try {
             layers = new FrameLayout(this);
             videoView = newVideoView();
+            exoView = newExoView();
+            subtitles = new SubtitleOverlay(this);
             SurfaceView uiView = new SurfaceView(this);
             uiView.setZOrderMediaOverlay(true);
             uiView.getHolder().setFormat(PixelFormat.TRANSLUCENT);
+            // mpv's view joins only when the native side switches to mpv:
+            // a hidden SurfaceView has no surface for anything to attach to.
+            videoView.setVisibility(View.GONE);
             layers.addView(videoView, matchParent());
+            layers.addView(exoView, matchParent());
             layers.addView(uiView, matchParent());
+            // Last: every SurfaceView here sits below the window and clears
+            // its rectangle in it, so anything drawn before the UI's
+            // full-screen one would be erased.
+            layers.addView(subtitles, matchParent());
             // Hand NativeActivity the UI layer's surface instead of the window's.
             getWindow().takeSurface(null);
             uiView.getHolder().addCallback(this);
@@ -155,8 +192,9 @@ public class MainActivity extends NativeActivity {
             Log.i(TAG, "layered surfaces turned off in Settings");
             return false;
         }
-        countStrike(UI_ATTEMPT, UI_STRIKES, "before the UI's first frame");
-        countStrike(VIDEO_ATTEMPT, VIDEO_STRIKES, "while starting video on its own surface");
+        countStrike(UI_ATTEMPT, UI_STRIKES, SINGLE_SURFACE, "before the UI's first frame");
+        countStrike(VIDEO_ATTEMPT, VIDEO_STRIKES, SINGLE_SURFACE, "while starting video on its own surface");
+        countStrike(EXO_ATTEMPT, EXO_STRIKES, EXO_OFF, "while ExoPlayer started a video");
         File marker = new File(filesDir, SINGLE_SURFACE);
         if (!marker.isFile()) {
             return true;
@@ -175,11 +213,11 @@ public class MainActivity extends NativeActivity {
      * that process died during the attempt. (The same process can leave one
      * behind without dying, e.g. Back before the first frame.)
      */
-    private static void countStrike(String attempt, String strikes, String when) {
+    private static void countStrike(String attempt, String strikes, String marker, String when) {
         String version = Long.toString(appVersionCode);
-        String[] marker = String.valueOf(readMarker(attempt)).split(" ");
-        boolean died = marker.length == 2 && marker[0].equals(version)
-                && !marker[1].equals(Integer.toString(Process.myPid()));
+        String[] previousAttempt = String.valueOf(readMarker(attempt)).split(" ");
+        boolean died = previousAttempt.length == 2 && previousAttempt[0].equals(version)
+                && !previousAttempt[1].equals(Integer.toString(Process.myPid()));
         if (died) {
             int count = 1;
             String[] previous = String.valueOf(readMarker(strikes)).split(" ");
@@ -193,7 +231,7 @@ public class MainActivity extends NativeActivity {
             Log.e(TAG, "the app died " + when + " (" + count + " of " + MAX_STRIKES + ")");
             writeFile(strikes, version + " " + count);
             if (count >= MAX_STRIKES) {
-                writeMarker(SINGLE_SURFACE);
+                writeMarker(marker);
             }
         }
         deleteQuietly(attempt);
@@ -239,6 +277,32 @@ public class MainActivity extends NativeActivity {
                     }
                     if (listening) {
                         nativeVideoSurface(null, 0, 0);
+                    }
+                }
+            }
+        });
+        return view;
+    }
+
+    /** ExoPlayer's video view. ExoPlayer follows its surface itself. */
+    private SurfaceView newExoView() {
+        SurfaceView view = new SurfaceView(this);
+        view.getHolder().addCallback(new SurfaceHolder.Callback() {
+            @Override
+            public void surfaceCreated(SurfaceHolder holder) {}
+
+            @Override
+            public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+                if (current == MainActivity.this) {
+                    sampleExoSurface = holder.getSurface();
+                }
+            }
+
+            @Override
+            public void surfaceDestroyed(SurfaceHolder holder) {
+                if (current == MainActivity.this) {
+                    synchronized (SAMPLE_LOCK) {
+                        sampleExoSurface = null;
                     }
                 }
             }
@@ -303,7 +367,8 @@ public class MainActivity extends NativeActivity {
             // Until the copy is done, the surface can't be released under it
             // (surfaceDestroyed waits for this lock; at most COPY_TIMEOUT_MS).
             synchronized (SAMPLE_LOCK) {
-                Surface source = videoSurface && layerState == 1 ? sampleVideoSurface : sampleUiSurface;
+                Surface layer = videoLayer == LAYER_EXO ? sampleExoSurface : sampleVideoSurface;
+                Surface source = videoSurface && layerState == 1 ? layer : sampleUiSurface;
                 if (source == null || !source.isValid()) {
                     return null;
                 }
@@ -333,6 +398,131 @@ public class MainActivity extends NativeActivity {
                 copyHandler = new Handler(thread.getLooper());
             }
             return copyHandler;
+        }
+    }
+
+    // ---- ExoPlayer ----
+
+    /**
+     * Called by the native side: ExoPlayer may play here. It needs the
+     * layered surfaces, and a version whose ExoPlayer starts kept killing the
+     * app uses mpv instead.
+     */
+    public static boolean exoAllowed() {
+        if (layerState != 1) {
+            return false;
+        }
+        if (Long.toString(appVersionCode).equals(readMarker(EXO_OFF))) {
+            Log.w(TAG, "ExoPlayer failed in this version before; using mpv");
+            return false;
+        }
+        return true;
+    }
+
+    /**
+     * Called by the native side (any thread): show ExoPlayer's video layer
+     * ({@code 2}) or mpv's ({@code 1}). Hiding mpv's view destroys its
+     * surface, which detaches mpv through the usual callback.
+     */
+    public static void showVideoLayer(int which) {
+        videoLayer = which == LAYER_MPV ? LAYER_MPV : LAYER_EXO;
+        MainActivity activity = current;
+        if (activity == null) {
+            return;
+        }
+        activity.runOnUiThread(() -> {
+            if (activity.videoView == null || activity.exoView == null) {
+                return;
+            }
+            boolean mpv = videoLayer == LAYER_MPV;
+            activity.exoView.setVisibility(mpv ? View.GONE : View.VISIBLE);
+            activity.videoView.setVisibility(mpv ? View.VISIBLE : View.GONE);
+            activity.subtitles.setVisibility(mpv ? View.GONE : View.VISIBLE);
+        });
+    }
+
+    /** Main thread (ExoBridge): ExoPlayer's video surface, or null without layers. */
+    static SurfaceHolder exoSurfaceHolder() {
+        MainActivity activity = current;
+        return activity == null || activity.exoView == null ? null : activity.exoView.getHolder();
+    }
+
+    /** Main thread (ExoBridge): where ExoPlayer's subtitles go. */
+    static SubtitleOverlay subtitleOverlay() {
+        MainActivity activity = current;
+        return activity == null ? null : activity.subtitles;
+    }
+
+    /**
+     * Main thread (ExoBridge): a video is about to start. Letterbox bars are
+     * black (not the window's colour), and until the process has seen
+     * ExoPlayer show a frame, a marker records the attempt.
+     */
+    static void exoPlaybackStarting() {
+        MainActivity activity = current;
+        if (activity != null && activity.layers != null) {
+            activity.layers.setBackgroundColor(Color.BLACK);
+        }
+        if (!exoWorked) {
+            writeAttempt(EXO_ATTEMPT);
+        }
+    }
+
+    /** Main thread (ExoBridge): ExoPlayer showed a frame. */
+    static void exoFrameShown() {
+        if (!exoWorked) {
+            exoWorked = true;
+            deleteQuietly(EXO_ATTEMPT);
+            deleteQuietly(EXO_STRIKES);
+        }
+    }
+
+    /** Main thread (ExoBridge): playback stopped. */
+    static void exoPlaybackEnded() {
+        MainActivity activity = current;
+        if (activity == null || activity.layers == null) {
+            return;
+        }
+        activity.layers.setBackground(null);
+        if (activity.exoView != null) {
+            activity.exoView.setLayoutParams(matchParent());
+        }
+        if (!exoWorked) {
+            // Stopped before a frame (Back, or a failure handled by the app): not a crash.
+            deleteQuietly(EXO_ATTEMPT);
+        }
+    }
+
+    /**
+     * Main thread (ExoBridge): size ExoPlayer's view to the video's display
+     * aspect ratio, centred. MediaCodec scales frames to the whole surface,
+     * so a full-screen view would stretch anything that isn't 16:9.
+     */
+    static void fitExoVideo(float aspect) {
+        MainActivity activity = current;
+        if (activity == null || activity.exoView == null || activity.layers == null || !(aspect > 0)) {
+            return;
+        }
+        int width = activity.layers.getWidth();
+        int height = activity.layers.getHeight();
+        if (width == 0 || height == 0) {
+            return;
+        }
+        int w = width;
+        int h = Math.round(width / aspect);
+        if (h > height) {
+            h = height;
+            w = Math.round(height * aspect);
+        }
+        // Within a pixel or two of the screen: fill it (no hairline bars).
+        if (Math.abs(w - width) <= 2 && Math.abs(h - height) <= 2) {
+            w = width;
+            h = height;
+        }
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(w, h, Gravity.CENTER);
+        ViewGroup.LayoutParams old = activity.exoView.getLayoutParams();
+        if (old == null || old.width != w || old.height != h) {
+            activity.exoView.setLayoutParams(params);
         }
     }
 

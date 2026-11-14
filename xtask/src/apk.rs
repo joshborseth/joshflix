@@ -1,10 +1,11 @@
 //! `cargo xtask apk`: cross-compile the app and package a signed APK.
 //!
 //! Once: `aapt2 compile` + `aapt2 link` for the manifest and resources, and
-//! `javac` + `d8` for the small Java activity in `android/java`.
-//! Per ABI: `cargo build` with the NDK clang as linker, add `classes.dex` and
-//! `lib/<abi>/*.so` stored uncompressed, `zipalign -P 16`, `apksigner sign`,
-//! and verify the result.
+//! `javac` + R8 for the Java in `android/java` (the activity, the ExoPlayer
+//! bridge and Media3's FFmpeg audio decoder) together with Media3's jars.
+//! Per ABI: `cargo build` with the NDK clang as linker, the FFmpeg decoder's
+//! JNI library, add `classes*.dex` and `lib/<abi>/*.so` stored uncompressed,
+//! `zipalign -P 16`, `apksigner sign`, and verify the result.
 
 use std::fs::File;
 use std::io::Read;
@@ -16,6 +17,7 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 use crate::args::Args;
 use crate::libmpv;
+use crate::media3;
 use crate::sdk::{Abi, Sdk};
 use crate::util::{self, command, hex, workspace_root};
 use crate::version::Version;
@@ -73,6 +75,7 @@ pub fn build(opts: &ApkOptions) -> Result<Vec<PathBuf>> {
         apk: link_resources(&sdk, &version, &work)?,
         dex: compile_java(&sdk, &work)?,
     };
+    let ffmpeg_headers = media3::ffmpeg_headers()?;
 
     let mut outputs = Vec::new();
     for &abi in &opts.abis {
@@ -80,11 +83,19 @@ pub fn build(opts: &ApkOptions) -> Result<Vec<PathBuf>> {
         let app_lib = cargo_build(&sdk, abi, opts.debug, opts.crate_manifest.as_deref())?;
         check_app_lib(&sdk, abi, &app_lib)?;
         let mut libs = vec![(APP_LIB.to_owned(), app_lib)];
-        for lib in libmpv::libraries(abi)? {
+        let mpv_libs = libmpv::libraries(abi)?;
+        let ffmpeg_dir = mpv_libs
+            .iter()
+            .find(|l| l.ends_with("libavcodec.so"))
+            .and_then(|l| l.parent())
+            .context("libmpv has no libavcodec.so")?
+            .to_path_buf();
+        for lib in mpv_libs {
             let name = lib.file_name().unwrap().to_string_lossy().into_owned();
-            ensure!(name != APP_LIB, "libmpv ships a library named {APP_LIB}");
+            ensure!(name != APP_LIB && name != FFMPEG_JNI_LIB, "libmpv ships a library named {name}");
             libs.push((name, lib));
         }
+        libs.push((FFMPEG_JNI_LIB.to_owned(), ffmpeg_jni(&sdk, abi, &ffmpeg_headers, &ffmpeg_dir, &work)?));
         let out = apk_path(&version, abi, opts.debug);
         package(&sdk, &signer, &base, &libs, abi, &work, &out)?;
         outputs.push(out);
@@ -131,43 +142,109 @@ fn link_resources(sdk: &Sdk, version: &Version, work: &Path) -> Result<PathBuf> 
 struct Base {
     /// Manifest and resources, from `aapt2 link`.
     apk: PathBuf,
-    /// The Java activity, from `d8`.
-    dex: PathBuf,
+    /// The Java code and Media3, from R8: `classes.dex`, `classes2.dex`…
+    dex: Vec<PathBuf>,
 }
 
-/// Compile `android/java` to `classes.dex` with `javac` and the SDK's `d8`.
-fn compile_java(sdk: &Sdk, work: &Path) -> Result<PathBuf> {
-    let sources = files_with_extension(&workspace_root().join("android/java"), "java")?;
+/// Library name Media3's `FfmpegLibrary` loads.
+const FFMPEG_JNI_LIB: &str = "libffmpegJNI.so";
+
+/// Compile `android/java` with `javac`, then shrink it and Media3 into dex
+/// files with R8 (from the SDK's `d8.jar`).
+fn compile_java(sdk: &Sdk, work: &Path) -> Result<Vec<PathBuf>> {
+    let java = workspace_root().join("android/java");
+    let sources = files_with_extension(&java, "java")?;
     ensure!(!sources.is_empty(), "android/java has no Java sources");
     let android_jar = sdk.android_jar()?;
+    let libs = media3::libraries()?;
     let classes = work.join("classes");
     let dex_dir = work.join("dex");
     for dir in [&classes, &dex_dir] {
         let _ = std::fs::remove_dir_all(dir);
         std::fs::create_dir_all(dir)?;
     }
-    util::run(
-        command("javac")
-            .args(["--release", "11", "-Xlint:all", "-Werror", "-Xlint:-options"])
-            .arg("-classpath")
-            .arg(&android_jar)
+    // The vendored sources compile first; ours see their classes.
+    let classpath = std::env::join_paths(
+        [classes.clone(), android_jar.clone()]
+            .into_iter()
+            .chain(libs.program.iter().cloned())
+            .chain(libs.classpath.iter().cloned()),
+    )?;
+    // Our code fails the build on any warning; the vendored Media3 sources
+    // keep their upstream warnings.
+    let (vendored, ours): (Vec<PathBuf>, Vec<PathBuf>) =
+        sources.into_iter().partition(|p| p.starts_with(java.join("androidx")));
+    for (files, strict) in [(&vendored, false), (&ours, true)] {
+        if files.is_empty() {
+            continue;
+        }
+        let mut cmd = command("javac");
+        cmd.args(["--release", "11", "-encoding", "UTF-8"]);
+        if strict {
+            // `classfile`: Media3's jars name annotation classes it doesn't ship.
+            cmd.args(["-Xlint:all", "-Werror", "-Xlint:-options", "-Xlint:-processing", "-Xlint:-classfile"]);
+        } else {
+            cmd.arg("-nowarn");
+        }
+        cmd.arg("-classpath")
+            .arg(&classpath)
             .arg("-d")
             .arg(&classes)
-            .args(&sources),
-    )
-    .context("javac (install a JDK, 11 or newer)")?;
-    util::run(
-        command(sdk.tool("d8"))
-            .args(["--release", "--min-api", "26"])
-            .arg("--lib")
-            .arg(&android_jar)
-            .arg("--output")
-            .arg(&dex_dir)
-            .args(files_with_extension(&classes, "class")?),
-    )?;
-    let dex = dex_dir.join("classes.dex");
-    ensure!(dex.is_file(), "d8 produced no classes.dex");
+            .args(files);
+        util::run(&mut cmd).context("javac (install a JDK, 11 or newer)")?;
+    }
+    let mut r8 = command("java");
+    r8.arg("-Xmx2g")
+        .arg("-cp")
+        .arg(sdk.tool("lib/d8.jar"))
+        .arg("com.android.tools.r8.R8")
+        .args(["--release", "--min-api", "26"])
+        .arg("--lib")
+        .arg(&android_jar)
+        .arg("--output")
+        .arg(&dex_dir)
+        .arg("--pg-conf")
+        .arg(workspace_root().join("android/proguard-rules.pro"));
+    for jar in &libs.classpath {
+        r8.arg("--classpath").arg(jar);
+    }
+    for rules in &libs.rules {
+        r8.arg("--pg-conf").arg(rules);
+    }
+    r8.args(files_with_extension(&classes, "class")?).args(&libs.program);
+    util::run(&mut r8).context("R8")?;
+    let mut dex = files_with_extension(&dex_dir, "dex")?;
+    // classes.dex, classes2.dex, … in order.
+    dex.sort_by_key(|p| {
+        let stem = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+        stem.trim_start_matches("classes").parse::<u32>().unwrap_or(1)
+    });
+    ensure!(dex.first().is_some_and(|d| d.ends_with("classes.dex")), "R8 produced no classes.dex");
     Ok(dex)
+}
+
+/// Media3's FFmpeg audio decoder glue (`android/jni/ffmpeg_jni.cc`), linked
+/// against the FFmpeg libraries libmpv ships.
+fn ffmpeg_jni(sdk: &Sdk, abi: Abi, headers: &Path, ffmpeg: &Path, work: &Path) -> Result<PathBuf> {
+    let out_dir = work.join(abi.android_name());
+    std::fs::create_dir_all(&out_dir)?;
+    let out = out_dir.join(FFMPEG_JNI_LIB);
+    util::run(
+        command(sdk.clangxx(abi))
+            // Upstream code, unchanged: no -Werror (it has an unused variable).
+            .args(["-std=c++17", "-O2", "-fPIC", "-shared", "-fvisibility=hidden"])
+            .arg("-I")
+            .arg(headers)
+            .arg(workspace_root().join("android/jni/ffmpeg_jni.cc"))
+            .arg("-L")
+            .arg(ffmpeg)
+            .args(["-lavcodec", "-lswresample", "-lavutil", "-llog", "-landroid"])
+            .args(["-Wl,-Bsymbolic", "-Wl,-z,max-page-size=16384", "-Wl,--no-undefined", "-Wl,-s"])
+            .arg("-o")
+            .arg(&out),
+    )
+    .context("compile the FFmpeg decoder's JNI library")?;
+    Ok(out)
 }
 
 /// Every file under `dir` (recursively) with this extension, sorted.
@@ -373,8 +450,11 @@ fn package(
         for i in 0..reader.len() {
             writer.raw_copy_file(reader.by_index_raw(i)?)?;
         }
-        writer.start_file("classes.dex", SimpleFileOptions::default())?;
-        std::io::copy(&mut File::open(&base.dex)?, &mut writer).context("add classes.dex")?;
+        for dex in &base.dex {
+            let name = dex.file_name().unwrap().to_string_lossy().into_owned();
+            writer.start_file(name.as_str(), SimpleFileOptions::default())?;
+            std::io::copy(&mut File::open(dex)?, &mut writer).with_context(|| format!("add {name}"))?;
+        }
         // Stored, so Android can mmap the libraries straight from the APK
         // (`extractNativeLibs="false"`).
         let options = SimpleFileOptions::default()

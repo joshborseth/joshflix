@@ -1,6 +1,6 @@
-//! Joshflix: a native Rust TV app. Slint draws the UI, libmpv plays video in
-//! the same OpenGL context, Comet finds Real-Debrid sources and Cinemeta
-//! supplies titles and artwork.
+//! Joshflix: a native Rust TV app. Slint draws the UI, Media3 ExoPlayer plays
+//! video on Android TVs (libmpv on desktop, and as the TV's fallback), Comet
+//! finds Real-Debrid sources and Cinemeta supplies titles and artwork.
 
 slint::include_modules!();
 
@@ -11,6 +11,9 @@ mod vsync;
 mod app;
 #[cfg(target_os = "android")]
 mod audio_fx;
+#[cfg(target_os = "android")]
+mod exo;
+mod exo_tracks;
 mod format;
 mod keyboard;
 mod logsink;
@@ -95,11 +98,31 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     };
 
     let video = VideoHost::new();
-    // Automatic means compatibility (MediaCodec copy-back): it's what mpv-android
-    // uses by default, and zero-copy through AImageReader stalled on the only
-    // Android device it was tried on. "Hardware" in Settings opts into zero-copy.
-    let compat = services.store.settings().ok().and_then(|s| s.video_compat_mode).unwrap_or(true);
-    video.set_player(VideoHost::create_player(compat, platform.audio_session()), compat);
+    let settings = services.store.settings().unwrap_or_default();
+    // mpv: Automatic means compatibility (MediaCodec copy-back): it's what
+    // mpv-android uses by default, and zero-copy through AImageReader stalled
+    // on the only Android device it was tried on. "Hardware" in Settings opts
+    // into zero-copy.
+    let compat = settings.video_compat_mode.unwrap_or(true);
+    video.set_compat_setting(compat);
+    // ExoPlayer plays on a TV unless Settings ask for mpv; mpv starts only
+    // when a file needs it.
+    let exo = video::exo_available();
+    video.set_exo_ok(exo);
+    tracing::info!("video player: {}", if !exo { "mpv (ExoPlayer unavailable)" } else if settings.use_mpv { "mpv (Settings)" } else { "ExoPlayer" });
+    let exo_started = exo
+        && !settings.use_mpv
+        && match video.use_engine(video::Engine::Exo, platform.audio_session()) {
+            Ok(()) => true,
+            Err(e) => {
+                tracing::error!("ExoPlayer: {e}; using mpv");
+                video.set_exo_ok(false);
+                false
+            }
+        };
+    if !exo_started {
+        video.set_player(VideoHost::create_player(compat, platform.audio_session()), compat);
+    }
     video.attach(&ui);
 
     AppState::get(&ui).on_key(|key| {

@@ -47,9 +47,11 @@ pub struct Settings {
     pub audio_normalization: bool,
     pub frame_rate_matching: bool,
     pub autoplay_next: bool,
-    /// Decode with MediaCodec copy-back instead of zero-copy (for TVs whose
-    /// drivers stall on the fast path). `None` = automatic, which is copy-back.
+    /// mpv: decode with MediaCodec copy-back instead of zero-copy (for TVs
+    /// whose drivers stall on the fast path). `None` = automatic, which is copy-back.
     pub video_compat_mode: Option<bool>,
+    /// Play everything with mpv instead of ExoPlayer on the TV.
+    pub use_mpv: bool,
     /// Last update version the user dismissed.
     pub dismissed_update_code: Option<u64>,
     /// The audio language last picked in the player (mpv `alang`), kept for
@@ -76,6 +78,7 @@ impl Default for Settings {
             frame_rate_matching: true,
             autoplay_next: true,
             video_compat_mode: None,
+            use_mpv: false,
             dismissed_update_code: None,
             audio_language: None,
             hold_tips_shown: 0,

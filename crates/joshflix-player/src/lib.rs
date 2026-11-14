@@ -194,6 +194,9 @@ pub enum PlayerEvent {
     DroppedByOutput(i64),
     DroppedByDecoder(i64),
     Ended(EndReason),
+    /// This player can't play this file on this device (ExoPlayer: an
+    /// unsupported format, a decoder failure). Another player may.
+    EngineFailed(String),
     Log { level: String, text: String },
 }
 
@@ -350,13 +353,7 @@ impl Inner {
                     title: self.get_string(&p("title")).filter(|t| !t.is_empty()),
                     lang: self.get_string(&p("lang")).filter(|t| !t.is_empty()),
                     codec: self.get_string(&p("codec")).filter(|t| !t.is_empty()),
-                    channels: self.get_i64(&p("demux-channel-count")).map(|n| match n {
-                        1 => "1.0".to_owned(),
-                        2 => "2.0".to_owned(),
-                        6 => "5.1".to_owned(),
-                        8 => "7.1".to_owned(),
-                        n => format!("{n}ch"),
-                    }),
+                    channels: self.get_i64(&p("demux-channel-count")).map(channel_label),
                     selected: self.get_bool(&p("selected")).unwrap_or(false),
                     external: self.get_bool(&p("external")).unwrap_or(false),
                     default: self.get_bool(&p("default")).unwrap_or(false),
@@ -975,6 +972,17 @@ impl Drop for VideoRenderer {
             (mpv.mpv_render_context_free)(self.ctx);
             drop(Box::from_raw(self.update_cb));
         }
+    }
+}
+
+/// "5.1" style name for a channel count.
+pub fn channel_label(channels: i64) -> String {
+    match channels {
+        1 => "1.0".to_owned(),
+        2 => "2.0".to_owned(),
+        6 => "5.1".to_owned(),
+        8 => "7.1".to_owned(),
+        n => format!("{n}ch"),
     }
 }
 

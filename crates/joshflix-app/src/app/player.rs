@@ -12,6 +12,7 @@ use super::detail::{PlayContext, PlayRequest};
 use super::{Controller, Key, shared};
 use crate::format;
 use crate::platform::AudioNormalization;
+use crate::video::{Engine, Playback};
 use crate::{PlayerState, Screen, TrackItem};
 
 const OVERLAY_SECS: u64 = 5;
@@ -31,6 +32,8 @@ const DECODE_TIMEOUT: Duration = Duration::from_secs(40);
 const NO_PICTURE_TIMEOUT: Duration = Duration::from_secs(8);
 /// How long video must show on mpv's own surface before that counts as working.
 const PICTURE_CONFIRM: Duration = Duration::from_secs(3);
+/// ExoPlayer loaded and buffered, yet no frame after this long: let mpv try.
+const EXO_NO_PICTURE_TIMEOUT: Duration = Duration::from_secs(15);
 /// How often the TV log gets a dropped-frames line during playback.
 const DROPS_LOG_EVERY: Duration = Duration::from_secs(10);
 /// A stream that drops after playing is reopened where it stopped, this many
@@ -103,8 +106,10 @@ pub struct PlayerCtl {
     open_timed_out: bool,
     /// mpv's latest error message, shown with a failure.
     last_mpv_error: Option<String>,
-    /// Last overlay visibility pushed to mpv (to lift subtitles above the controls).
+    /// Last overlay visibility pushed to the player (to lift subtitles above the controls).
     overlay_shown: Option<bool>,
+    /// Last "subtitles hidden" pushed to the player (while a menu or an error shows).
+    subtitles_hidden: Option<bool>,
     /// Audio Normalization is on.
     normalize: bool,
     /// Decoded frame width, and the width mpv's video output is set up for
@@ -148,7 +153,37 @@ impl PlayerCtl {
 }
 
 impl Controller {
+    /// The player for `url`: ExoPlayer on a TV, unless Settings ask for mpv
+    /// or ExoPlayer already failed on this stream.
+    fn engine_for(&self, url: &str) -> Engine {
+        if self.video.exo_ok() && !self.settings.use_mpv && self.mpv_for.as_deref() != Some(url) {
+            Engine::Exo
+        } else {
+            Engine::Mpv
+        }
+    }
+
     pub fn start_playback(&mut self, request: PlayRequest, source: Source, url: String) {
+        let engine = self.engine_for(&url);
+        if self.mpv_for.as_deref().is_some_and(|u| u != url) {
+            self.mpv_for = None;
+        }
+        if let Err(e) = self.video.use_engine(engine, self.platform.audio_session()) {
+            tracing::error!("{engine:?} player: {e}");
+            // Without ExoPlayer for the rest of this run, mpv plays instead.
+            let fallback = if engine == Engine::Exo {
+                self.video.set_exo_ok(false);
+                self.video.use_engine(Engine::Mpv, self.platform.audio_session())
+            } else {
+                Err(e)
+            };
+            if let Err(e) = fallback {
+                tracing::error!("mpv player: {e}");
+                self.toast(&format!("The video player isn't available. {e}"));
+                self.push_start();
+                return;
+            }
+        }
         let Some(player) = self.video.player() else {
             let reason = self.video.unavailable_reason().unwrap_or_default();
             self.toast(&format!("The video player isn't available. {reason}"));
@@ -166,7 +201,7 @@ impl Controller {
         let _ = player.set_subtitle_scale(f64::from(self.settings.subtitle_scale));
         // The audio language picked last time (a multi-language release
         // shouldn't switch back to its default every episode).
-        let _ = player.set_property("alang", self.settings.audio_language.as_deref().unwrap_or(""));
+        let _ = player.set_audio_language(self.settings.audio_language.as_deref());
         crate::video::want_video(true);
         if let Err(e) = player.load(&url, request.resume_at) {
             crate::video::want_video(self.screen == Screen::Player);
@@ -181,12 +216,13 @@ impl Controller {
             self.platform.keep_screen_on(true);
         }
         tracing::info!(
-            "play {} · {} · cached={} · stream host {}{}",
+            "play {} · {} · cached={} · stream host {}{} · {}",
             request.video.video_id(),
             source.release.release_name,
             source.cached,
             url.split('/').nth(2).unwrap_or("?"),
             request.resume_at.filter(|s| *s > 1.0).map(|s| format!(" · resume at {s:.0} s")).unwrap_or_default(),
+            if player.is_exo() { "ExoPlayer" } else { "mpv" },
         );
         let next = self.next_for(&request);
         self.player = Some(PlayerCtl {
@@ -230,6 +266,7 @@ impl Controller {
             drops_logged: (0, 0),
             drops_logged_at: Instant::now(),
             overlay_shown: None,
+            subtitles_hidden: None,
             normalize,
             reconnects: 0,
             reconnect_on_return: false,
@@ -291,6 +328,12 @@ impl Controller {
                         return;
                     }
                     if let Some(player) = c.video.player() {
+                        if player.is_exo() {
+                            // ExoPlayer reads such a file over one connection, jumping
+                            // for nearly every sample; mpv opens extra connections.
+                            c.fall_back_to_mpv("its audio or subtitles are stored far from the video");
+                            return;
+                        }
                         let ids = |ids: Vec<u32>| ids.into_iter().map(i64::from).collect();
                         let tracks = joshflix_player::SeparateTracks { audio: ids(separate.audio), subtitles: ids(separate.subtitles) };
                         let _ = player.separate_tracks(&url, tracks);
@@ -481,8 +524,18 @@ impl Controller {
                     return;
                 }
             }
+            PlayerEvent::EngineFailed(message) => {
+                self.fall_back_to_mpv(&message);
+                return;
+            }
             PlayerEvent::Ended(EndReason::Error(message)) => {
-                tracing::warn!("playback failed: {message} (last mpv error: {:?})", p.last_mpv_error);
+                tracing::warn!("playback failed: {message} (last player error: {:?})", p.last_mpv_error);
+                // Before anything played, mpv gets a go at a stream ExoPlayer couldn't open.
+                if !p.started && p.reconnects == 0 && self.video.player().is_some_and(|pl| pl.is_exo()) {
+                    self.fall_back_to_mpv(&message);
+                    return;
+                }
+                let Some(p) = self.player.as_mut() else { return };
                 // A drop in the credits finishes the episode (autoplay goes on).
                 let near_end = p.duration > 0.0
                     && (p.position >= p.duration * joshflix_core::store::WATCHED_FRACTION || p.duration - p.position < 90.0);
@@ -592,7 +645,15 @@ impl Controller {
             p.overlay_shown = Some(overlay);
             if let Some(player) = self.video.player() {
                 // Lift subtitles above the seek bar while the controls show.
-                let _ = player.set_property("sub-margin-y", if overlay { "150" } else { "48" });
+                let _ = player.set_subtitles_lifted(overlay);
+            }
+        }
+        // ExoPlayer's subtitles draw above the UI: keep them off menus and errors.
+        let hidden = p.menu.is_some() || p.error.is_some();
+        if p.subtitles_hidden != Some(hidden) {
+            p.subtitles_hidden = Some(hidden);
+            if let Some(player) = self.video.player() {
+                let _ = player.set_subtitles_hidden(hidden);
             }
         }
         let p = self.player.as_ref().expect("player");
@@ -662,12 +723,25 @@ impl Controller {
             // Some OpenSubtitles downloads never arrive; apply the preference anyway.
             self.choose_subtitle_now(true);
         }
+        let exo = self.video.player().is_some_and(|pl| pl.is_exo());
         let Some(p) = self.player.as_mut() else { return };
+        // ExoPlayer loaded and buffered but shows nothing: let mpv try.
+        if exo
+            && !p.paused
+            && !p.started
+            && p.error.is_none()
+            && p.cache_ahead >= 5.0
+            && p.loaded_at.is_some_and(|t| t.elapsed() > EXO_NO_PICTURE_TIMEOUT)
+        {
+            self.fall_back_to_mpv(&format!("no picture {EXO_NO_PICTURE_TIMEOUT:?} after loading"));
+            return;
+        }
         // Some TV/emulator drivers accept MediaCodec's zero-copy output but never
         // deliver frames. If 8 s after loading nothing has played although 5 s of
         // media is buffered (so it isn't the network), continue on a new mpv
         // instance in copy-back mode, which works everywhere.
         if cfg!(target_os = "android")
+            && !exo
             && !self.video.is_compat()
             && !p.hwdec_fallback
             && !p.paused
@@ -688,10 +762,11 @@ impl Controller {
         // Own-surface mode: playing with a video track but no picture means mpv
         // couldn't show video on its surface. Fall back to drawing it into the
         // UI. No picture is expected while the surface itself is missing.
-        if crate::video::surface_mode() && crate::video::own_surface_ready() {
+        if !exo && crate::video::surface_mode() && crate::video::own_surface_ready() {
             let player = self.video.player();
             let has_video = player.as_ref().is_some_and(|pl| pl.tracks().iter().any(|t| t.kind == TrackKind::Video));
-            let picture = output_shows_video && player.as_ref().is_some_and(crate::video::shows_on_own_surface);
+            let picture = output_shows_video
+                && player.as_ref().and_then(Playback::mpv).is_some_and(crate::video::shows_on_own_surface);
             if playing && has_video && !picture {
                 p.picture_since = None;
                 let since = *p.no_picture_since.get_or_insert_with(Instant::now);
@@ -717,7 +792,7 @@ impl Controller {
             p.no_picture_since = None;
             // After a fallback from the own surface: once video drawn into the
             // UI shows, the own surface was the problem (not the file).
-            if crate::video::fallback_pending() && playing && output_shows_video {
+            if !exo && crate::video::fallback_pending() && playing && output_shows_video {
                 let since = *p.picture_since.get_or_insert_with(Instant::now);
                 if since.elapsed() > PICTURE_CONFIRM {
                     crate::video::confirm_fallback();
@@ -1030,9 +1105,15 @@ impl Controller {
     /// Switch Audio Normalization with the platform's effect, or mpv's filter
     /// where the platform has none. Returns false (after a toast when `tell`)
     /// if this device can't normalize audio.
-    fn apply_audio_normalization(&mut self, player: &joshflix_player::Player, on: bool, tell: bool) -> bool {
+    fn apply_audio_normalization(&mut self, player: &Playback, on: bool, tell: bool) -> bool {
         match self.platform.set_audio_normalization(on) {
-            AudioNormalization::Platform => true,
+            AudioNormalization::Platform => {
+                // The effect only sees decoded audio: no passthrough meanwhile.
+                if let Err(e) = player.set_platform_normalization(on) {
+                    tracing::warn!("audio normalization: {e}");
+                }
+                true
+            }
             AudioNormalization::Player => {
                 if let Err(e) = player.set_audio_normalization(on) {
                     tracing::warn!("audio normalization: {e}");
@@ -1064,6 +1145,33 @@ impl Controller {
             }
             Err(e) => self.toast(&format!("The video player couldn't restart: {e}")),
         }
+    }
+
+    /// ExoPlayer can't play this stream: continue it with mpv, where it got
+    /// to (or where it was meant to start). mpv keeps playing this URL,
+    /// including reopens after drops.
+    pub(super) fn fall_back_to_mpv(&mut self, reason: &str) {
+        let Some(p) = self.player.take() else { return };
+        tracing::warn!("ExoPlayer can't play this ({reason}); continuing with mpv");
+        self.mpv_for = Some(p.url.clone());
+        let mut request = p.request.clone();
+        if p.started {
+            request.resume_at = Some(p.seek_target.unwrap_or(p.position)).filter(|s| *s > 1.0).or(request.resume_at);
+        }
+        let (subtitle, next) = (p.user_subtitle, (p.next.dismissed, p.next.shown));
+        self.start_playback(request, p.source, p.url);
+        if let Some(p) = self.player.as_mut() {
+            (p.next.dismissed, p.next.shown) = next;
+            if let Some(subtitle) = subtitle {
+                // Track ids differ between players: only "off" carries over.
+                if subtitle.is_none() {
+                    p.subtitle_user_choice = true;
+                    p.user_subtitle = Some(None);
+                    p.restore_subtitle = Some(None);
+                }
+            }
+        }
+        self.push_player();
     }
 
     /// Video never appeared on mpv's own surface: draw it into the UI from now

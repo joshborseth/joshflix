@@ -41,6 +41,7 @@ enum Action {
     AutoplayNext,
     FrameRate,
     AudioNormalization,
+    VideoPlayer,
     VideoDecoding,
     VideoLayer,
     SubtitlesOn,
@@ -163,23 +164,39 @@ impl Controller {
                 Item::toggle("Autoplay next episode", s.autoplay_next, "Starts the next one when an episode ends", Action::AutoplayNext),
                 Item::toggle("Match frame rate", s.frame_rate_matching, "Switches the TV to the video's frame rate (24p…) when supported", Action::FrameRate),
                 Item::toggle("Audio Normalization by default", s.audio_normalization, "Quieter loud scenes, clearer dialogue. Toggle anytime in the player.", Action::AudioNormalization),
-                Item::choice(
-                    "Video decoding",
-                    match s.video_compat_mode {
-                        None => "Automatic",
-                        Some(false) => "Hardware",
-                        Some(true) => "Compatibility",
-                    },
-                    "Automatic copies decoded frames, which works on every TV. Hardware skips the copy but can show a black screen. Applies after restarting Joshflix.",
-                    Action::VideoDecoding,
-                ),
             ]
             .into_iter()
+            .chain(cfg!(target_os = "android").then(|| {
+                Item::choice(
+                    "Video player",
+                    if s.use_mpv { "mpv" } else { "ExoPlayer" },
+                    if self.video.exo_ok() || s.use_mpv {
+                        "ExoPlayer plays on the TV's video hardware, with Dolby Vision, HDR and surround passthrough. mpv takes over by itself when a file needs it."
+                    } else {
+                        "ExoPlayer isn't available here (it needs the separate video layer), so mpv plays everything."
+                    },
+                    Action::VideoPlayer,
+                )
+            }))
+            .chain(std::iter::once(Item::choice(
+                "Video decoding",
+                match s.video_compat_mode {
+                    None => "Automatic",
+                    Some(false) => "Hardware",
+                    Some(true) => "Compatibility",
+                },
+                if cfg!(target_os = "android") {
+                    "For mpv. Automatic copies decoded frames, which works on every TV. Hardware skips the copy but can show a black screen. Applies after restarting Joshflix."
+                } else {
+                    "Automatic copies decoded frames, which works everywhere. Hardware skips the copy. Applies after restarting Joshflix."
+                },
+                Action::VideoDecoding,
+            )))
             .chain(cfg!(target_os = "android").then(|| {
                 Item::toggle(
                     "Separate video layer",
                     self.video_layer_on(),
-                    "Video plays on its own layer under the menus. Turn off if video stays black. Applies after restarting Joshflix.",
+                    "Video plays on its own layer under the menus; ExoPlayer needs it. Turn off if video stays black, and mpv plays everything. Applies after restarting Joshflix.",
                     Action::VideoLayer,
                 )
             }))
@@ -371,6 +388,16 @@ impl Controller {
             Action::AutoplayNext => self.save_settings(|s| s.autoplay_next = !s.autoplay_next),
             Action::FrameRate => self.save_settings(|s| s.frame_rate_matching = !s.frame_rate_matching),
             Action::AudioNormalization => self.save_settings(|s| s.audio_normalization = !s.audio_normalization),
+            Action::VideoPlayer => {
+                self.save_settings(|s| s.use_mpv = !s.use_mpv);
+                self.toast(if self.settings.use_mpv {
+                    "mpv plays from the next video"
+                } else if self.video.exo_ok() {
+                    "ExoPlayer plays from the next video"
+                } else {
+                    "ExoPlayer isn't available on this TV"
+                });
+            }
             Action::VideoDecoding => {
                 let next = cycle(&[None, Some(false), Some(true)], self.settings.video_compat_mode, step);
                 self.save_settings(|s| s.video_compat_mode = next);

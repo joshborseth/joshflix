@@ -10,6 +10,7 @@ mod device;
 mod git;
 mod icons;
 mod libmpv;
+mod media3;
 mod publish;
 mod sdk;
 mod util;
@@ -24,6 +25,7 @@ Usage: cargo xtask <command> [options]
 
 Commands:
   fetch-libmpv                 Download, verify and extract the prebuilt libmpv into .local/libmpv/
+  fetch-media3                 Download and verify Media3 ExoPlayer's jars and FFmpeg's headers into .local/
   apk [--abi A] [--debug]      Build signed APKs into dist/ (A: arm, arm64, x86_64 or all; default all)
   install [--serial S] [--debug]
                                adb install -r the dist APK that matches the device ABI
@@ -58,6 +60,10 @@ fn run() -> Result<()> {
         "fetch-libmpv" => {
             args.finish()?;
             libmpv::fetch()?;
+        }
+        "fetch-media3" => {
+            args.finish()?;
+            media3::fetch()?;
         }
         "apk" => {
             let opts = apk::ApkOptions::parse(&mut args)?;

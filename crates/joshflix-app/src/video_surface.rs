@@ -211,6 +211,46 @@ fn load_activity_class<'a>(env: &mut JNIEnv<'a>, activity: &JObject) -> jni::err
     }
 }
 
+/// The process's Java VM, once [`init`] ran.
+pub fn vm() -> Option<&'static JavaVM> {
+    VM.get()
+}
+
+/// The current `MainActivity`, once [`init`] found it.
+pub fn activity() -> Option<GlobalRef> {
+    state().activity.clone()
+}
+
+/// `MainActivity`'s class, once [`init`] found it.
+pub fn activity_class() -> Option<GlobalRef> {
+    state().class.clone()
+}
+
+/// An app class by name, through the activity's class loader.
+pub fn load_app_class(name: &str) -> Result<GlobalRef, String> {
+    let activity = activity().ok_or("no activity")?;
+    let vm = VM.get().ok_or("no JavaVM")?;
+    let mut env = vm.attach_current_thread().map_err(|e| e.to_string())?;
+    let result = env.with_local_frame(8, |env| -> jni::errors::Result<Option<GlobalRef>> {
+        let loader = env.call_method(activity.as_obj(), "getClassLoader", "()Ljava/lang/ClassLoader;", &[])?.l()?;
+        let class_name = env.new_string(name)?;
+        let class = env.call_method(&loader, "loadClass", "(Ljava/lang/String;)Ljava/lang/Class;", &[JValue::Object(&class_name)])?.l()?;
+        Ok(Some(env.new_global_ref(class)?))
+    });
+    match result {
+        Ok(Some(class)) => Ok(class),
+        Ok(None) => Err(format!("{name} not found")),
+        Err(e) => Err(describe(&mut env, e)),
+    }
+}
+
+/// Let go of mpv: another player shows video now. mpv detaches from the
+/// surface on the worker thread.
+pub fn clear_player() {
+    state().current = None;
+    wake();
+}
+
 /// Turn a pending Java exception into text and clear it.
 fn describe(env: &mut JNIEnv, e: jni::errors::Error) -> String {
     if matches!(e, jni::errors::Error::JavaException) {

@@ -230,6 +230,8 @@ pub struct Controller {
 
     /// Compatibility mode was entered automatically; save it once frames show.
     pub pending_compat_save: bool,
+    /// ExoPlayer couldn't play this stream URL: mpv plays it (and its reopens).
+    pub mpv_for: Option<String>,
     /// Bumped to invalidate in-flight next-episode lookups.
     pub autoplay_generation: u64,
     /// The app is in the background (Android paused it).
@@ -291,6 +293,7 @@ impl Controller {
             onboarding_step: 0,
             dialog: None,
             pending_compat_save: false,
+            mpv_for: None,
             autoplay_generation: 0,
             backgrounded: false,
             ok_pending: None,
@@ -364,9 +367,7 @@ impl Controller {
     pub fn shutdown(&mut self) {
         self.stop_playback(true);
         self.pairing.cancel();
-        if let Some(player) = self.video.player() {
-            player.shutdown();
-        }
+        self.video.shutdown();
     }
 
     // ---- async bridge ----

@@ -24,7 +24,7 @@ const AAR_SHA256: &str = "5af4652b16caf3e26a597904dc609c69be8e2fb794d0ea77b1ba26
 /// Libraries in the AAR that we do not ship.
 ///
 /// `libplayer.so` is the JNI glue for the AAR's Kotlin `dev.jdtech.mpv.MPVLib`
-/// class. We have no Java code, so it would only waste space.
+/// class, which we don't use: the player crate calls libmpv directly.
 const EXCLUDED: &[&str] = &["libplayer.so"];
 
 fn base_dir() -> PathBuf {

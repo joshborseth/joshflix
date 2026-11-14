@@ -1,14 +1,21 @@
-//! Draws libmpv video underneath the Slint UI in the same OpenGL context.
+//! The video players, and drawing mpv's video into the UI.
 //!
-//! Slint clears the frame, calls our `BeforeRendering` hook (mpv renders the
-//! current video frame into the default framebuffer), then draws the UI on
-//! top. mpv's "new frame" callback asks Slint for a redraw.
+//! [`VideoHost`] owns the players and says which one plays ([`Engine`]):
+//! - ExoPlayer on Android TVs ([`crate::exo`]), on its own video layer;
+//! - mpv everywhere else, and on a TV for files ExoPlayer can't play. On
+//!   Android it draws on its own layer too ([`crate::video_surface`]); on
+//!   desktop, or a TV without layers, it draws into the UI's OpenGL context:
+//!   Slint clears the frame, calls our `BeforeRendering` hook (mpv renders
+//!   the current video frame into the default framebuffer), then draws the UI
+//!   on top. mpv's "new frame" callback asks Slint for a redraw.
+//!
+//! [`Playback`] is the player the controller talks to, whichever it is.
 
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, c_void};
 use std::rc::Rc;
 
-use joshflix_player::{Player, TrackKind, VideoRenderer};
+use joshflix_player::{Player, PlayerEvent, SeparateTracks, Track, TrackKind, VideoRenderer};
 use slint::{ComponentHandle, GraphicsAPI, RenderingState};
 
 use crate::AppWindow;
@@ -312,17 +319,217 @@ impl GlState {
     }
 }
 
+/// Which player plays.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Engine {
+    Mpv,
+    /// Media3 ExoPlayer (Android).
+    Exo,
+}
+
+/// The player that plays now, mpv or ExoPlayer. Cloning shares it. Every
+/// call returns at once.
+#[derive(Clone)]
+pub enum Playback {
+    Mpv(Player),
+    #[cfg(target_os = "android")]
+    Exo(crate::exo::Exo),
+}
+
+impl Playback {
+    pub fn engine(&self) -> Engine {
+        match self {
+            Playback::Mpv(_) => Engine::Mpv,
+            #[cfg(target_os = "android")]
+            Playback::Exo(_) => Engine::Exo,
+        }
+    }
+
+    pub fn is_exo(&self) -> bool {
+        self.engine() == Engine::Exo
+    }
+
+    /// The mpv instance, when mpv plays.
+    pub fn mpv(&self) -> Option<&Player> {
+        match self {
+            Playback::Mpv(player) => Some(player),
+            #[cfg(target_os = "android")]
+            Playback::Exo(_) => None,
+        }
+    }
+
+    pub fn load(&self, url: &str, start_secs: Option<f64>) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.load(url, start_secs),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.load(url, start_secs),
+        }
+    }
+
+    pub fn stop(&self) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.stop(),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.stop(),
+        }
+    }
+
+    pub fn set_paused(&self, paused: bool) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.set_paused(paused),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.set_paused(paused),
+        }
+    }
+
+    pub fn toggle_pause(&self) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.toggle_pause(),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.toggle_pause(),
+        }
+    }
+
+    pub fn seek_to(&self, secs: f64) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.seek_to(secs),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.seek_to(secs),
+        }
+    }
+
+    pub fn seek_by(&self, secs: f64) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.seek_by(secs),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.seek_by(secs),
+        }
+    }
+
+    /// `None` disables the track type (subtitles off).
+    pub fn select_track(&self, kind: TrackKind, id: Option<i64>) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.select_track(kind, id),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.select_track(kind, id),
+        }
+    }
+
+    /// Add an external subtitle without selecting it.
+    pub fn add_subtitle(&self, url: &str, title: &str, lang: &str) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.add_subtitle(url, title, lang),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.add_subtitle(url, title, lang),
+        }
+    }
+
+    pub fn set_subtitle_scale(&self, scale: f64) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.set_subtitle_scale(scale),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.set_subtitle_scale(scale),
+        }
+    }
+
+    /// Lift subtitles above the player's controls while they show.
+    pub fn set_subtitles_lifted(&self, lifted: bool) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.set_property("sub-margin-y", if lifted { "150" } else { "48" }),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.set_subtitles_lifted(lifted),
+        }
+    }
+
+    /// Hide subtitles for a while (ExoPlayer's draw above the UI). mpv's
+    /// draw under the UI, which covers them by itself.
+    pub fn set_subtitles_hidden(&self, hidden: bool) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(_) => {
+                let _ = hidden;
+                Ok(())
+            }
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.set_subtitles_hidden(hidden),
+        }
+    }
+
+    /// The audio language to prefer (the one picked last time), from the next load on.
+    pub fn set_audio_language(&self, language: Option<&str>) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.set_property("alang", language.unwrap_or("")),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => {
+                e.set_audio_language(language);
+                Ok(())
+            }
+        }
+    }
+
+    /// The player's own Audio Normalization filter (mpv's lavfi chain).
+    pub fn set_audio_normalization(&self, enabled: bool) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.set_audio_normalization(enabled),
+            #[cfg(target_os = "android")]
+            Playback::Exo(_) => Ok(()),
+        }
+    }
+
+    /// A platform effect normalizes audio (`on`): it only sees decoded audio,
+    /// so ExoPlayer stops passing Dolby and DTS through meanwhile.
+    pub fn set_platform_normalization(&self, on: bool) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(_) => {
+                let _ = on;
+                Ok(())
+            }
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.set_pcm_only(on),
+        }
+    }
+
+    /// mpv: read these tracks over their own connections (see [`SeparateTracks`]).
+    pub fn separate_tracks(&self, url: &str, tracks: SeparateTracks) -> joshflix_player::Result<()> {
+        match self {
+            Playback::Mpv(p) => p.separate_tracks(url, tracks),
+            #[cfg(target_os = "android")]
+            Playback::Exo(_) => Ok(()),
+        }
+    }
+
+    /// The current file's tracks, as of the last change. Never blocks.
+    pub fn tracks(&self) -> Vec<Track> {
+        match self {
+            Playback::Mpv(p) => p.tracks(),
+            #[cfg(target_os = "android")]
+            Playback::Exo(e) => e.tracks(),
+        }
+    }
+}
+
 #[derive(Default)]
 pub struct VideoHost {
+    /// mpv, created when first needed (on a TV, only for files ExoPlayer can't play).
     player: RefCell<Option<Player>>,
+    /// The id mpv's events carry.
+    mpv_id: Cell<u64>,
+    #[cfg(target_os = "android")]
+    exo: RefCell<Option<crate::exo::Exo>>,
+    #[cfg(target_os = "android")]
+    exo_id: Cell<u64>,
+    /// The player that plays now.
+    engine: Cell<Option<Engine>>,
     renderer: RefCell<Option<VideoRenderer>>,
     gl: RefCell<Option<GlState>>,
     visible: Cell<bool>,
     unavailable: RefCell<Option<String>>,
-    /// Instance id of the current player; events from abandoned instances are dropped.
-    current_id: Cell<u64>,
+
     /// The current player decodes in compatibility (copy-back) mode.
     compat: Cell<bool>,
+    /// The decoding mode a new mpv starts in (Settings).
+    compat_setting: Cell<bool>,
+    /// ExoPlayer works on this device (checked once at startup).
+    exo_ok: Cell<bool>,
     /// Video was turned off because the GL surface went away (Android
     /// background, or a TV that rebuilds its window on a display-mode switch).
     /// Holds the video track that was playing, if the track list knew it.
@@ -331,19 +538,33 @@ pub struct VideoHost {
 
 static NEXT_PLAYER_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
+/// A player event, to the controller on the UI thread.
+fn forward_event(id: u64, event: PlayerEvent) {
+    let _ = slint::invoke_from_event_loop(move || crate::app::with_controller(|c| c.on_player_event(id, event)));
+}
+
+/// ExoPlayer plays on this device (Android, with video on its own layer).
+pub fn exo_available() -> bool {
+    #[cfg(target_os = "android")]
+    return crate::exo::available();
+    #[cfg(not(target_os = "android"))]
+    false
+}
+
 impl VideoHost {
     pub fn new() -> Rc<Self> {
         Rc::new(Self::default())
     }
 
+    /// Make mpv the player, with this new instance.
     pub fn set_player(&self, player: Result<(Player, u64), String>, compat: bool) {
         match player {
             Ok((player, id)) => {
-                #[cfg(target_os = "android")]
-                crate::video_surface::set_player(player.clone());
                 *self.player.borrow_mut() = Some(player);
-                self.current_id.set(id);
+                self.mpv_id.set(id);
                 self.compat.set(compat);
+                self.engine.set(Some(Engine::Mpv));
+                self.show_mpv();
             }
             Err(reason) => {
                 tracing::error!("player unavailable: {reason}");
@@ -351,6 +572,83 @@ impl VideoHost {
             }
         }
     }
+
+    /// Android: mpv shows video (its layer, and its surface).
+    fn show_mpv(&self) {
+        #[cfg(target_os = "android")]
+        if let Some(player) = self.player.borrow().clone() {
+            if crate::video_surface::enabled() {
+                crate::exo::show_layer(false);
+            }
+            crate::video_surface::set_player(player);
+        }
+    }
+
+    /// Switch to `engine` for the next playback, creating its player when
+    /// needed, and stop the other one. Fails when that player can't start.
+    pub fn use_engine(&self, engine: Engine, audio_session: Option<i32>) -> Result<(), String> {
+        let have = match engine {
+            Engine::Mpv => self.player.borrow().is_some(),
+            #[cfg(target_os = "android")]
+            Engine::Exo => self.exo.borrow().is_some(),
+            #[cfg(not(target_os = "android"))]
+            Engine::Exo => return Err("ExoPlayer only exists on Android".into()),
+        };
+        if self.engine.get() == Some(engine) && have {
+            return Ok(());
+        }
+        // Whatever played before stops (its video layer goes away below).
+        if let Some(old) = self.player() {
+            let _ = old.stop();
+        }
+        match engine {
+            Engine::Mpv => {
+                if !have {
+                    // Automatic decoding means compatibility (copy-back), as at startup.
+                    let compat = self.compat_setting.get();
+                    let created = Self::create_player(compat, audio_session)?;
+                    *self.player.borrow_mut() = Some(created.0);
+                    self.mpv_id.set(created.1);
+                    self.compat.set(compat);
+                }
+                self.engine.set(Some(Engine::Mpv));
+                self.show_mpv();
+            }
+            Engine::Exo => {
+                #[cfg(target_os = "android")]
+                {
+                    if !have {
+                        let id = NEXT_PLAYER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let exo = crate::exo::Exo::new(id, audio_session, concat!("Joshflix/", env!("CARGO_PKG_VERSION")), forward_event)
+                            .map_err(|e| e.to_string())?;
+                        tracing::info!("player {id}: ExoPlayer");
+                        *self.exo.borrow_mut() = Some(exo);
+                        self.exo_id.set(id);
+                    }
+                    crate::video_surface::clear_player();
+                    crate::exo::show_layer(true);
+                    self.engine.set(Some(Engine::Exo));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The decoding mode mpv starts with when it's created later.
+    pub fn set_compat_setting(&self, compat: bool) {
+        self.compat_setting.set(compat);
+    }
+
+    /// Whether ExoPlayer can play here ([`exo_available`] at startup), or
+    /// stop being used for the rest of this run (`false`).
+    pub fn set_exo_ok(&self, ok: bool) {
+        self.exo_ok.set(ok);
+    }
+
+    pub fn exo_ok(&self) -> bool {
+        self.exo_ok.get()
+    }
+
 
     /// Create an mpv instance whose events go to the controller, tagged with an id.
     /// `audio_session` is the platform's audio session for mpv's AudioTrack output.
@@ -362,11 +660,11 @@ impl VideoHost {
             config.hwdec = "mediacodec-copy,no".into();
         }
         let id = NEXT_PLAYER_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tracing::info!("player {id}: hwdec={} compat={compat_mode} own surface={}", config.hwdec, config.android_surface);
+        tracing::info!("player {id}: mpv, hwdec={} compat={compat_mode} own surface={}", config.hwdec, config.android_surface);
         Player::new(&config, move |event| {
             // Log mpv's messages right here on its event thread, so they still
             // reach logcat and the relay when the UI thread is stuck.
-            if let joshflix_player::PlayerEvent::Log { level, text } = &event {
+            if let PlayerEvent::Log { level, text } = &event {
                 match level.as_str() {
                     "error" | "fatal" => tracing::error!("mpv[{id}]: {text}"),
                     "warn" => tracing::warn!("mpv[{id}]: {text}"),
@@ -377,14 +675,20 @@ impl VideoHost {
                     return;
                 }
             }
-            let _ = slint::invoke_from_event_loop(move || crate::app::with_controller(|c| c.on_player_event(id, event)));
+            forward_event(id, event);
         })
         .map(|player| (player, id))
         .map_err(|e| e.to_string())
     }
 
+    /// Instance id of the current player; events from other instances are dropped.
     pub fn current_id(&self) -> u64 {
-        self.current_id.get()
+        match self.engine.get() {
+            Some(Engine::Mpv) => self.mpv_id.get(),
+            #[cfg(target_os = "android")]
+            Some(Engine::Exo) => self.exo_id.get(),
+            _ => 0,
+        }
     }
 
     pub fn is_compat(&self) -> bool {
@@ -398,19 +702,42 @@ impl VideoHost {
         if let Some(renderer) = self.renderer.borrow_mut().take() {
             std::mem::forget(renderer);
         }
-        #[cfg(target_os = "android")]
-        crate::video_surface::set_player(player.clone());
         if let Some(old) = self.player.borrow_mut().replace(player) {
             let _ = old.stop();
             std::mem::forget(old);
         }
-        self.current_id.set(id);
+        self.mpv_id.set(id);
         self.compat.set(compat);
         self.video_suspended.set(None);
+        self.engine.set(Some(Engine::Mpv));
+        self.show_mpv();
     }
 
-    pub fn player(&self) -> Option<Player> {
+    /// The player that plays now.
+    pub fn player(&self) -> Option<Playback> {
+        match self.engine.get()? {
+            Engine::Mpv => self.player.borrow().clone().map(Playback::Mpv),
+            #[cfg(target_os = "android")]
+            Engine::Exo => self.exo.borrow().clone().map(Playback::Exo),
+            #[cfg(not(target_os = "android"))]
+            Engine::Exo => None,
+        }
+    }
+
+    /// The mpv instance, if one exists (it draws into the UI on desktop).
+    fn mpv(&self) -> Option<Player> {
         self.player.borrow().clone()
+    }
+
+    /// Stop both players' threads (the app is closing).
+    pub fn shutdown(&self) {
+        if let Some(player) = self.mpv() {
+            player.shutdown();
+        }
+        #[cfg(target_os = "android")]
+        if let Some(exo) = self.exo.borrow_mut().take() {
+            let _ = exo.stop();
+        }
     }
 
     pub fn unavailable_reason(&self) -> Option<String> {
@@ -435,7 +762,7 @@ impl VideoHost {
                     // With its own surface (Android), mpv draws video itself.
                     if host.renderer.borrow().is_none()
                         && !surface_mode()
-                        && let Some(player) = host.player()
+                        && let Some(player) = host.mpv()
                     {
                         let redraw = weak.clone();
                         let on_frame: Box<dyn Fn() + Send + Sync> = Box::new(move || {
@@ -492,7 +819,7 @@ impl VideoHost {
                     // the cached track list: it still shows the selection before mpv
                     // drops the video, and reading it never blocks on mpv.
                     if host.renderer.borrow().is_some()
-                        && let Some(player) = host.player()
+                        && let Some(player) = host.mpv()
                     {
                         let video = player.tracks().into_iter().find(|t| t.kind == TrackKind::Video && t.selected);
                         if let Some(track) = video {

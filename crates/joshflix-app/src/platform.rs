@@ -161,6 +161,8 @@ pub mod android {
         audio: Option<(i32, Normalizer)>,
         /// Bumped by every frame-rate change, so a pending UI request can tell it's stale.
         frame_rate_generation: Rc<Cell<u64>>,
+        /// Keep-screen-on changes, applied in order on their own thread.
+        screen_on: Option<std::sync::mpsc::Sender<bool>>,
     }
 
     /// How long the display gets to switch back from a video's mode before the UI asks for its own.
@@ -170,7 +172,9 @@ pub mod android {
         pub fn new(app: AndroidApp) -> Self {
             // SAFETY: android-activity hands us valid JavaVM and Activity pointers for the process lifetime.
             let vm = unsafe { JavaVM::from_raw(app.vm_as_ptr().cast()) }.expect("JavaVM");
-            let mut android = Self { app, vm, caps: DisplayCaps::SDR_1080, audio: None, frame_rate_generation: Rc::default() };
+            let screen_on = Self::spawn_window_flags(&app);
+            let mut android =
+                Self { app, vm, caps: DisplayCaps::SDR_1080, audio: None, frame_rate_generation: Rc::default(), screen_on };
             android.caps = android.query_caps().unwrap_or_else(|e| {
                 tracing::warn!("display caps: {e}");
                 DisplayCaps::SDR_1080
@@ -178,6 +182,35 @@ pub mod android {
             tracing::info!("display caps: {:?}", android.caps);
             android.audio = android.attach_audio_effect().inspect_err(|e| tracing::warn!("audio normalization: {e}")).ok();
             android
+        }
+
+        /// The thread that sets the window's keep-screen-on flag.
+        ///
+        /// android-activity's `set_window_flags` takes a lock that Android's
+        /// main thread holds while it waits for this app's event loop (for
+        /// example while it hands over a new surface). Called from the event
+        /// loop, as returning to the app mid-playback does, it deadlocks:
+        /// Android reports the app as not responding. From its own thread it
+        /// just waits its turn.
+        fn spawn_window_flags(app: &AndroidApp) -> Option<std::sync::mpsc::Sender<bool>> {
+            let (tx, rx) = std::sync::mpsc::channel::<bool>();
+            let app = app.clone();
+            let spawned = std::thread::Builder::new().name("window-flags".into()).spawn(move || {
+                while let Ok(on) = rx.recv() {
+                    if on {
+                        app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
+                    } else {
+                        app.set_window_flags(WindowManagerFlags::empty(), WindowManagerFlags::KEEP_SCREEN_ON);
+                    }
+                }
+            });
+            match spawned {
+                Ok(_) => Some(tx),
+                Err(e) => {
+                    tracing::warn!("keep screen on: {e}");
+                    None
+                }
+            }
         }
 
         /// Generate mpv's audio session and attach Audio Normalization's effect to it.
@@ -454,10 +487,8 @@ pub mod android {
         }
 
         fn keep_screen_on(&self, on: bool) {
-            if on {
-                self.app.set_window_flags(WindowManagerFlags::KEEP_SCREEN_ON, WindowManagerFlags::empty());
-            } else {
-                self.app.set_window_flags(WindowManagerFlags::empty(), WindowManagerFlags::KEEP_SCREEN_ON);
+            if let Some(tx) = &self.screen_on {
+                let _ = tx.send(on);
             }
         }
 

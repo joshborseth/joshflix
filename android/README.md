@@ -1,7 +1,7 @@
 # Android packaging
 
 Joshflix ships as a `NativeActivity` APK built without Gradle.
-`cargo xtask` cross-compiles `joshflix-app`, compiles the one Java class in `android/java` with `javac` and the SDK's `d8`, and packages them with `aapt2`, `zipalign`, and `apksigner`.
+`cargo xtask` cross-compiles `joshflix-app`, compiles the Java in `android/java` with `javac`, shrinks it together with Media3 ExoPlayer's jars into `classes.dex` with R8 (from the SDK's `d8.jar`), builds Media3's FFmpeg audio decoder, and packages everything with `aapt2`, `zipalign`, and `apksigner`.
 
 ## Prerequisites
 
@@ -14,6 +14,7 @@ Joshflix ships as a `NativeActivity` APK built without Gradle.
 | Command | What it does |
 | --- | --- |
 | `cargo xtask fetch-libmpv` | Downloads the pinned libmpv release, checks its SHA-256, and extracts the libraries to `.local/libmpv/1.0.0-stremio02/<abi>/`. `apk` runs this automatically when needed. |
+| `cargo xtask fetch-media3` | Downloads Media3 ExoPlayer and its dependencies from Google Maven and Maven Central (each pinned by SHA-256) into `.local/media3/<version>/`, and FFmpeg's headers into `.local/ffmpeg-headers/<version>/`. `apk` runs this automatically when needed. |
 | `cargo xtask apk [--abi arm\|arm64\|x86_64\|all] [--debug]` | Builds `dist/joshflix-<versionName>-<abi>.apk` (release by default; `--debug` adds a `-debug` suffix). ABIs build one after another. |
 | `cargo xtask install [--serial S] [--debug]` | Runs `adb install -r` with the dist APK for the first ABI in the device's `ro.product.cpu.abilist`. |
 | `cargo xtask run [--serial S] [--debug] [--build] [--logcat]` | Installs and launches `com.joshflix.tv/.MainActivity`. `--build` builds the device's ABI first; `--logcat` follows the app's log afterwards. |
@@ -45,9 +46,11 @@ APKs are signed with APK Signature Scheme v2 and v3 only, because `minSdk` is 26
 ```
 AndroidManifest.xml                 binary XML, versionCode/versionName injected from version.toml
 resources.arsc, res/...             theme, launcher icons, adaptive icon, TV banner
+classes.dex                         the activity, the ExoPlayer bridge, Media3 and Guava (R8, about 1.4 MB)
 lib/<abi>/libjoshflix_app.so        the app (stored, 16 KB aligned)
 lib/<abi>/libmpv.so                 libmpv and its dependencies (stored, 16 KB aligned)
 lib/<abi>/libavcodec.so ... libswscale.so
+lib/<abi>/libffmpegJNI.so           Media3's FFmpeg audio decoder glue, linked against libavcodec.so
 lib/<abi>/libc++_shared.so
 ```
 
@@ -55,7 +58,13 @@ There is no `META-INF/` JAR signature: the v2/v3 signatures live in the APK sign
 
 Libraries are stored uncompressed and `zipalign -P 16` aligns them to 16 KB pages, so Android maps them directly from the APK (`extractNativeLibs="false"`).
 The xtask links the app with `-z max-page-size=16384`, because NDK r27 still defaults to 4 KB.
-A release arm64 APK is about 25 MB, almost all of it FFmpeg and mpv.
+A release arm64 APK is about 27 MB, almost all of it FFmpeg, mpv and Media3.
+
+## Media3 ExoPlayer
+
+The TV plays video with Media3 ExoPlayer 1.11.1 (`com.joshflix.tv.ExoBridge`). `xtask/src/media3.rs` pins every jar it needs: `media3-{exoplayer,common,container,database,datasource,decoder,extractor}`, `exifinterface`, Guava and `failureaccess` go into the APK. `androidx.annotation`, `annotation-experimental`, `checker-qual` and `kotlin-stdlib` (for Kotlin's annotation classes) are only on the compile classpath. R8 shrinks everything with each AAR's consumer rules and `android/proguard-rules.pro`, without obfuscation, so stack traces in the TV log stay readable.
+
+Media3 doesn't publish its FFmpeg extension. Its Java sources (`android/java/androidx/media3/decoder/ffmpeg/`) and JNI glue (`android/jni/ffmpeg_jni.cc`) are copied from the `1.11.1` tag. `apk` compiles the glue per ABI with the NDK's clang++ against FFmpeg 9.0.1's headers, which match libmpv's libavcodec 63.1.101, and links it to libmpv's `libavcodec.so`, `libswresample.so` and `libavutil.so`. ExoPlayer only uses it for audio nothing else on the TV plays (`DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON`).
 
 ## libmpv
 
@@ -90,7 +99,8 @@ The AAR has no C headers. The player crate declares the mpv and `av_jni_*` funct
   Also call `av_jni_set_android_app_ctx(activity_or_context, NULL)` if a codec needs the app context.
   mpv's AudioTrack output reads the same JavaVM through FFmpeg.
 - `minSdk` is 26 (Android 8.0). The NDK clang wrappers are `<triple>26-clang`.
-- The only Java code is `com.joshflix.tv.MainActivity` (`android/java`), a `NativeActivity` subclass that stacks two `SurfaceView`s: mpv's video surface at the bottom and a translucent UI surface on top, which it hands to the native side in place of the window's surface. The native side reaches it through the activity's class loader (`src/video_surface.rs`): it registers `nativeVideoSurface`, attaches mpv to that surface while the player is open, and confirms the first UI frame.
+- `com.joshflix.tv.ExoBridge` runs ExoPlayer on Android's main thread for the native side (`src/exo.rs`): every call is posted there, and events come back through `nativeEvent` and `nativeLog`, which the native side registers. `MainActivity` gives it its own video `SurfaceView` (resized to the video's aspect ratio, so frames aren't stretched), and a `SubtitleOverlay` view, added last so that no `SurfaceView` clears it. `files/exo-attempt` and `files/exo-strikes` count processes that died while ExoPlayer started a video; after two, `files/exo-off` holds the version code and that version plays with mpv.
+- `com.joshflix.tv.MainActivity` (`android/java`) is a `NativeActivity` subclass that stacks `SurfaceView`s: the video surfaces at the bottom (ExoPlayer's, and mpv's, only one shown at a time: `showVideoLayer`) and a translucent UI surface on top, which it hands to the native side in place of the window's surface. The native side reaches it through the activity's class loader (`src/video_surface.rs`): it registers `nativeVideoSurface`, attaches mpv to that surface while the player is open, and confirms the first UI frame.
   That version of the app then uses a single surface for good (`files/single-surface` holds its version code) when:
   - no UI frame is confirmed within 15 s (the activity also closes, so reopening works);
   - two processes died before the UI's first frame, or while mpv was starting on the video surface before video had played for 3 s (`files/ui-attempt` and `files/video-surface-attempt` hold `versionCode pid` and are left behind; `files/*-strikes` count them);
