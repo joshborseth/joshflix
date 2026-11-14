@@ -14,7 +14,7 @@ A native Android TV app for movies and shows, written entirely in Rust. It takes
 - **Titles and artwork:** Cinemeta (Stremio's keyless metadata service).
 - **Sources:** ElfHosted's public Comet with your Real-Debrid key. Cached sources (⚡) start instantly through Comet's redirect. Uncached ones resolve on the TV with live Real-Debrid download progress.
 - **Subtitles:** the file's own tracks plus Stremio's keyless OpenSubtitles service.
-- **Key pairing, updates and screen colors:** a small private relay on the dev box's home network (`crates/joshflix-relay`).
+- **Key pairing, updates and screen colors:** a small private relay on your home network (`crates/joshflix-relay`).
 
 ## Features
 
@@ -72,7 +72,7 @@ Useful environment variables (desktop only):
 | --- | --- |
 | `JOSHFLIX_HOME` | Where data and cache live (default `~/.local/share/joshflix`). |
 | `JOSHFLIX_RD_KEY` | Skip onboarding with this Real-Debrid key. |
-| `JOSHFLIX_SERVER_URL` | Relay base URL (default `http://192.168.1.67:8788`; also a build-time setting for Android). |
+| `JOSHFLIX_SERVER_URL` | Relay base URL (default `http://127.0.0.1:8788`). Android release builds take it at build time: see [android/README.md](android/README.md#relay-url). |
 | `JOSHFLIX_COMET_URL` | Point at a different Comet instance, for example a local mock. |
 | `JOSHFLIX_DISPLAY=sdr1080` | Pretend the screen is a 1080p SDR TV, to test **Match my TV**. |
 | `JOSHFLIX_HWDEC`, `JOSHFLIX_MPV_LOG=v` | Override mpv's hardware decoding and log level. |
@@ -93,7 +93,10 @@ cargo test --workspace
 
 ## Build and install on a TV
 
+Run the relay first ([deploy/README.md](deploy/README.md)) and tell the build where it is ([android/README.md](android/README.md#relay-url)):
+
 ```sh
+mkdir -p .local && echo 'JOSHFLIX_SERVER_URL=http://<relay-host>:8788' > .local/relay.env
 cargo xtask apk --abi arm64          # or arm / x86_64 / all
 cargo xtask run --serial <tv-ip>:5555
 ```
@@ -119,3 +122,7 @@ TVs check the relay from Settings → About, and automatically on launch. They d
 - The relay never stores keys. It holds a key in memory until the TV collects it, then forgets it. It only answers LAN and Tailscale addresses.
 - While a video plays, the TV tells the relay its title and whether it is playing. While the lights app listens, it also sends a 48×27 copy of the picture about once a second. The relay keeps only the color and the title, in memory.
 - Nothing else leaves the TV except requests to Cinemeta, OpenSubtitles and the artwork CDN.
+
+## License
+
+Joshflix is licensed under the GNU General Public License v3.0 only ([LICENSE](LICENSE)). The vendored Media3 FFmpeg decoder (`android/java/androidx/media3/decoder/ffmpeg`, `android/jni/ffmpeg_jni.cc`) is Apache-2.0, and the Inter font is under the SIL Open Font License (`crates/joshflix-app/ui/fonts/Inter-LICENSE.txt`).

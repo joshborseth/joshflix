@@ -1,4 +1,4 @@
-//! Ships the app's log lines to the relay on the dev box, so problems on a TV
+//! Ships the app's log lines to the relay, so problems on a TV
 //! without adb can still be diagnosed (`<relay data>/logs/tv.log`).
 //!
 //! Lines collect in a bounded in-memory buffer and go out in batches every few

@@ -638,7 +638,7 @@ async fn phone_url_uses_host_or_public_url() {
             .expect("request")
     };
 
-    let r = oneshot(&state, "192.168.1.20:1", post("192.168.1.67:8788")).await;
+    let r = oneshot(&state, "192.168.1.20:1", post("192.168.1.10:8788")).await;
     assert_eq!(r.status(), StatusCode::CREATED);
     let body = axum::body::to_bytes(r.into_body(), 4096)
         .await
@@ -646,14 +646,14 @@ async fn phone_url_uses_host_or_public_url() {
     let created: CreatePairingResponse = serde_json::from_slice(&body).expect("json");
     assert_eq!(
         created.phone_url,
-        format!("http://192.168.1.67:8788/p/{}", created.code)
+        format!("http://192.168.1.10:8788/p/{}", created.code)
     );
 
     let r = oneshot(&state, "192.168.1.20:1", post("evil.com/x?")).await;
     assert_eq!(r.status(), StatusCode::BAD_REQUEST);
 
     let mut cfg = config(&dir, "http://127.0.0.1:9");
-    cfg.public_url = Some("http://100.107.121.43:8788".into());
+    cfg.public_url = Some("http://100.100.1.2:8788".into());
     let state = AppState::new(cfg).expect("state");
     let r = oneshot(&state, "192.168.1.20:1", post("whatever:1")).await;
     let body = axum::body::to_bytes(r.into_body(), 4096)
@@ -662,7 +662,7 @@ async fn phone_url_uses_host_or_public_url() {
     let created: CreatePairingResponse = serde_json::from_slice(&body).expect("json");
     assert_eq!(
         created.phone_url,
-        format!("http://100.107.121.43:8788/p/{}", created.code)
+        format!("http://100.100.1.2:8788/p/{}", created.code)
     );
 }
 
@@ -801,16 +801,16 @@ async fn stores_tv_logs_from_lan_peers_only() {
             .expect("request")
     };
 
-    let r = oneshot(&state, "192.168.1.245:4000", post("first line\r\n==== forged\nsecond")).await;
+    let r = oneshot(&state, "192.168.1.30:4000", post("first line\r\n==== forged\nsecond")).await;
     assert_eq!(r.status(), StatusCode::NO_CONTENT);
     let r = oneshot(&state, "8.8.8.8:4000", post("from the internet")).await;
     assert_eq!(r.status(), StatusCode::FORBIDDEN);
     let big = "x".repeat(joshflix_relay::logs::MAX_BATCH_BYTES + 1);
-    let r = oneshot(&state, "192.168.1.245:4000", post(&big)).await;
+    let r = oneshot(&state, "192.168.1.30:4000", post(&big)).await;
     assert_eq!(r.status(), StatusCode::PAYLOAD_TOO_LARGE);
 
     let log = std::fs::read_to_string(dir.0.join("logs/tv.log")).expect("log file");
-    assert_eq!(log, "==== 192.168.1.245 · Test TV - Android 12\nfirst line\n==== forged\nsecond\n");
+    assert_eq!(log, "==== 192.168.1.30 · Test TV - Android 12\nfirst line\n==== forged\nsecond\n");
 }
 
 #[tokio::test]

@@ -1,6 +1,6 @@
 //! Wire types shared by the Joshflix TV app and the private relay server.
 //!
-//! The relay runs only on the dev box network. Its jobs:
+//! The relay runs only on the home network. Its jobs:
 //!
 //! 1. **Real-Debrid pairing.** The TV creates a pairing, shows a QR code that
 //!    points to the relay's phone page, and long-polls until the phone submits
@@ -58,7 +58,7 @@ pub struct CreatePairingResponse {
     pub code: String,
     /// Secret only the TV knows. Required to read the submitted key.
     pub tv_secret: String,
-    /// Full URL the phone opens (the QR content), e.g. `http://192.168.1.67:8788/p/<code>`.
+    /// Full URL the phone opens (the QR content), e.g. `http://192.168.1.10:8788/p/<code>`.
     pub phone_url: String,
     /// Seconds until the pairing expires.
     pub expires_in_secs: u64,

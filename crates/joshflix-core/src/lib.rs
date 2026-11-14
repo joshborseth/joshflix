@@ -8,7 +8,7 @@
 //! - [`realdebrid`]: account checks and turning a torrent into a direct HTTPS stream.
 //! - [`subtitles`]: subtitle lists from the keyless OpenSubtitles v3 service.
 //! - [`store`]: on-device settings, My List and watch progress (redb).
-//! - [`pairing`] and [`update`]: the private relay on the dev box network.
+//! - [`pairing`] and [`update`]: the private relay on the home network.
 //! - [`images`]: poster/backdrop download, disk cache and downscaled decode.
 //!
 //! Every network call goes through one [`http::Http`] client (rustls with the

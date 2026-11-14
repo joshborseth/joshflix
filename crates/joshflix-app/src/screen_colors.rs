@@ -1,6 +1,6 @@
 //! Screen colors for the house lights.
 //!
-//! The relay on the dev box streams the colors on screen to the lights app
+//! The relay streams the colors on screen to the lights app
 //! (`crates/joshflix-relay/src/screen.rs`). This side tells it what plays and,
 //! while it plays and the relay says someone listens, sends a tiny copy of the
 //! picture about once a second. Nobody listening costs a small post every few

@@ -142,7 +142,7 @@ a { color: var(--accent); text-underline-offset: 2px; }
   </section>
 
   <section class="card" id="view-offline" hidden>
-    <p class="error" id="offline-text">Couldn't reach the dev box. Make sure your phone is on the home Wi-Fi or the tailnet.</p>
+    <p class="error" id="offline-text">Couldn't reach the pairing server. Make sure your phone is on the same home network as the TV.</p>
     <button type="button" class="secondary" id="retry">Try again</button>
   </section>
 
@@ -256,7 +256,7 @@ a { color: var(--accent); text-underline-offset: 2px; }
           : "Something went wrong. Try again.");
       })
       .catch(function () {
-        setError("Couldn't reach the dev box. Check your connection and try again.");
+        setError("Couldn't reach the pairing server. Check your connection and try again.");
       })
       .then(function () {
         send.disabled = false;

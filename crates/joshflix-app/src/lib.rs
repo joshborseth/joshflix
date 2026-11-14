@@ -39,11 +39,13 @@ use crate::app::{Controller, Services, with_controller};
 use crate::platform::Platform;
 use crate::video::VideoHost;
 
-/// The private relay on the dev box (pairing + updates). Override at build
-/// time with `JOSHFLIX_SERVER_URL`, or at runtime on desktop with the same env var.
+/// The private relay (pairing, updates, TV logs). Set at build time with
+/// `JOSHFLIX_SERVER_URL` (`cargo xtask apk` requires it for release builds),
+/// or at runtime on desktop with the same env var. Without either, the app
+/// looks for a relay on the same machine.
 pub const DEFAULT_SERVER: &str = match option_env!("JOSHFLIX_SERVER_URL") {
     Some(url) => url,
-    None => "http://192.168.1.67:8788",
+    None => "http://127.0.0.1:8788",
 };
 
 /// Development overrides from `<data dir>/dev.env` (`JOSHFLIX_*=value` lines).
@@ -80,7 +82,7 @@ pub fn run(platform: Rc<dyn Platform>) -> Result<(), String> {
     let http = Http::new().map_err(|e| e.to_string())?;
     let store = Store::open(&platform.data_dir().join("joshflix.redb")).map_err(|e| format!("storage: {e}"))?;
     let server = std::env::var("JOSHFLIX_SERVER_URL").unwrap_or_else(|_| DEFAULT_SERVER.to_owned());
-    // TVs usually have no adb: their logs go to the relay on the dev box.
+    // TVs usually have no adb: their logs go to the relay.
     if cfg!(target_os = "android") {
         logsink::spawn_uploader(runtime.handle(), http.clone(), &server, &platform.device_label());
     }

@@ -607,12 +607,12 @@ mod tests {
     #[test]
     fn host_validation() {
         for ok in [
-            "192.168.1.67:8788",
+            "192.168.1.10:8788",
             "localhost",
             "dev-box.local:80",
             "[::1]:8788",
             "[fd7a::1]",
-            "100.107.121.43",
+            "100.100.1.2",
         ] {
             assert!(is_sane_host(ok), "{ok}");
         }

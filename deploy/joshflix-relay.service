@@ -9,7 +9,7 @@ ExecStart=%h/.local/bin/joshflix-relay
 Environment=RUST_LOG=info
 Environment=JOSHFLIX_RELAY_BIND=0.0.0.0:8788
 # Optional overrides:
-# Environment=JOSHFLIX_RELAY_PUBLIC_URL=http://192.168.1.67:8788
+# Environment=JOSHFLIX_RELAY_PUBLIC_URL=http://<relay-host>:8788
 # Environment=JOSHFLIX_RELAY_DATA=%h/.local/share/joshflix-relay
 Restart=on-failure
 RestartSec=2s

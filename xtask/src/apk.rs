@@ -27,6 +27,8 @@ pub const APP_LIB: &str = "libjoshflix_app.so";
 const APP_PACKAGE: &str = "joshflix-app";
 const KEY_ALIAS: &str = "joshflix";
 const PASSWORD_VAR: &str = "JOSHFLIX_KEYSTORE_PASSWORD";
+/// Relay base URL compiled into the app (see `joshflix_app::DEFAULT_SERVER`).
+const SERVER_VAR: &str = "JOSHFLIX_SERVER_URL";
 
 pub struct ApkOptions {
     pub abis: Vec<Abi>,
@@ -62,6 +64,8 @@ pub fn apk_path(version: &Version, abi: Abi, debug: bool) -> PathBuf {
 }
 
 pub fn build(opts: &ApkOptions) -> Result<Vec<PathBuf>> {
+    // Before the signer: a fresh checkout shouldn't get a new key and then stop.
+    let server = relay_url(opts.debug)?;
     let sdk = Sdk::locate()?;
     let version = Version::load()?;
     let signer = Signer::load_or_create()?;
@@ -80,7 +84,7 @@ pub fn build(opts: &ApkOptions) -> Result<Vec<PathBuf>> {
     let mut outputs = Vec::new();
     for &abi in &opts.abis {
         eprintln!("==> {} ({profile})", abi.android_name());
-        let app_lib = cargo_build(&sdk, abi, opts.debug, opts.crate_manifest.as_deref())?;
+        let app_lib = cargo_build(&sdk, abi, opts.debug, opts.crate_manifest.as_deref(), server.as_deref())?;
         check_app_lib(&sdk, abi, &app_lib)?;
         let mut libs = vec![(APP_LIB.to_owned(), app_lib)];
         let mpv_libs = libmpv::libraries(abi)?;
@@ -333,7 +337,13 @@ fn cargo() -> String {
 }
 
 /// Cross-compiles the app cdylib and returns its path.
-fn cargo_build(sdk: &Sdk, abi: Abi, debug: bool, crate_manifest: Option<&Path>) -> Result<PathBuf> {
+fn cargo_build(
+    sdk: &Sdk,
+    abi: Abi,
+    debug: bool,
+    crate_manifest: Option<&Path>,
+    server: Option<&str>,
+) -> Result<PathBuf> {
     let info = crate_info(crate_manifest)?;
     let triple = abi.rust_triple();
     let env_triple = triple.replace('-', "_");
@@ -371,6 +381,9 @@ fn cargo_build(sdk: &Sdk, abi: Abi, debug: bool, crate_manifest: Option<&Path>) 
         .env("ANDROID_NDK_ROOT", &sdk.ndk);
     if std::env::var_os("CARGO_BUILD_JOBS").is_none() {
         cmd.env("CARGO_BUILD_JOBS", "6");
+    }
+    if let Some(server) = server {
+        cmd.env(SERVER_VAR, server);
     }
     if !debug {
         cmd.arg("--release");
@@ -516,6 +529,40 @@ fn package(
     let _ = std::fs::remove_file(&unaligned);
     let _ = std::fs::remove_file(&aligned);
     Ok(())
+}
+
+/// The relay URL to compile into the app: `JOSHFLIX_SERVER_URL` from the
+/// environment, else the same line in `.local/relay.env`. Release builds need
+/// one, because a TV can't pair, update, or send logs without its relay.
+fn relay_url(debug: bool) -> Result<Option<String>> {
+    let env_file = workspace_root().join(".local/relay.env");
+    let url = match std::env::var(SERVER_VAR) {
+        Ok(url) => Some(url),
+        Err(_) => match std::fs::read_to_string(&env_file) {
+            Ok(text) => text
+                .lines()
+                .find_map(|l| l.trim().strip_prefix(&format!("{SERVER_VAR}=")))
+                .map(str::to_owned),
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => None,
+            Err(err) => return Err(err).with_context(|| format!("reading {}", env_file.display())),
+        },
+    };
+    let url = url.map(|u| u.trim().trim_end_matches('/').to_owned()).filter(|u| !u.is_empty());
+    match url {
+        Some(url) => {
+            ensure!(
+                url.starts_with("http://") || url.starts_with("https://"),
+                "{SERVER_VAR} must be an http(s) URL, got {url:?}"
+            );
+            Ok(Some(url))
+        }
+        None if debug => Ok(None),
+        None => bail!(
+            "release builds need the relay's URL: set {SERVER_VAR}, or put \
+             `{SERVER_VAR}=http://<relay-host>:8788` in {}",
+            env_file.display()
+        ),
+    }
 }
 
 /// The release keystore, generated once in `.local/`.

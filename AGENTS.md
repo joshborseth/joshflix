@@ -19,7 +19,7 @@ Several threads release in parallel. Right before you build:
 - Run `git pull --rebase origin main` in the main checkout.
 - Check the relay manifest's `version_code`, and bump `android/version.toml` above it.
 
-Build and publish from the main checkout. Its `.local/` holds the release keystore, and `cargo xtask apk` without it silently makes a new key whose APKs can't update the installed app.
+Build and publish from the main checkout. Its `.local/` holds the release keystore and `relay.env` (the relay URL built into release APKs). `cargo xtask apk` without the keystore silently makes a new key whose APKs can't update the installed app.
 
 ## Start times
 

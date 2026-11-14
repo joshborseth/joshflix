@@ -1,6 +1,6 @@
 //! Private relay server for Joshflix.
 //!
-//! The relay runs on the dev box and is reachable only from the home LAN and
+//! The relay runs on a home computer and is reachable only from the home LAN and
 //! the tailnet. It never needs to be exposed to the internet. It has four jobs,
 //! both described by the wire contract in [`joshflix_protocol`]:
 //!
@@ -71,8 +71,8 @@ pub use error::api_error;
 
 /// Default Real-Debrid REST base URL.
 pub const DEFAULT_RD_API_BASE: &str = "https://api.real-debrid.com/rest/1.0";
-/// Default listen address. IPv4 only on purpose: the dev box's IPv6 address is
-/// globally routable. Port 8787 is taken by another service on the dev box.
+/// Default listen address. IPv4 only on purpose: a host's IPv6 address is often
+/// globally routable.
 pub const DEFAULT_BIND: &str = "0.0.0.0:8788";
 
 /// Everything the relay needs to run. [`Config::from_env`] reads it from the
@@ -83,7 +83,7 @@ pub struct Config {
     pub data_dir: PathBuf,
     /// Real-Debrid REST base URL, without a trailing slash.
     pub rd_api_base: String,
-    /// Base URL the phone should open, e.g. `http://192.168.1.67:8788`.
+    /// Base URL the phone should open, e.g. `http://192.168.1.10:8788`.
     /// When `None`, the request's `Host` header is used.
     pub public_url: Option<String>,
     /// How long a pairing stays valid.

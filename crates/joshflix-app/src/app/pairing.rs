@@ -187,7 +187,7 @@ impl Controller {
                 Err(e) => {
                     tracing::warn!("pairing: {e}");
                     c.pairing.state = ERROR;
-                    c.pairing.status = "Couldn't reach the pairing server on the dev box. Type the key instead.".into();
+                    c.pairing.status = "Couldn't reach the pairing server. Type the key instead.".into();
                     c.push_pairing();
                 }
             }

@@ -31,6 +31,16 @@ Joshflix ships as a `NativeActivity` APK built without Gradle.
 `publish` refuses to run when `version_code` is not higher than the published one, or when `version_name` is unchanged (APK file names contain only the name).
 It also checks each APK's package name and version with `aapt2 dump badging`.
 
+## Relay URL
+
+The app has its relay's address (`crates/joshflix-relay`, see [deploy/README.md](../deploy/README.md)) built in. `cargo xtask apk` stops with an error when a release build has none. Set `JOSHFLIX_SERVER_URL`, or keep it in the gitignored `.local/relay.env`:
+
+```sh
+mkdir -p .local && echo 'JOSHFLIX_SERVER_URL=http://<relay-host>:8788' > .local/relay.env
+```
+
+Use an address the TV can reach, such as the relay computer's LAN IP. Debug builds without it point at `http://127.0.0.1:8788`; override that on a device with `dev.env` (see the root README).
+
 ## Signing key
 
 The first `apk` run creates `.local/joshflix-release.jks` (PKCS12, alias `joshflix`, RSA 4096) and `.local/keystore.env`, which holds the random password.
