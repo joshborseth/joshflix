@@ -30,6 +30,9 @@ pub struct SearchCtl {
 /// Caret blink half-period.
 const CARET_BLINK: Duration = Duration::from_millis(530);
 
+/// Recent searches kept and shown.
+const RECENT_SHOWN: usize = 4;
+
 impl SearchCtl {
     pub(super) fn focused_item(&self) -> Option<&RowItem> {
         if self.keyboard_active {
@@ -92,8 +95,11 @@ impl Controller {
         state.set_key_index(s.keyboard.index as i32);
         state.set_keyboard_active(s.keyboard_active);
         state.set_focused_row(s.row as i32);
-        let recent: Vec<slint::SharedString> = self.settings.recent_searches.iter().map(shared).collect();
-        state.set_recent(ModelRc::new(VecModel::from(recent)));
+        // The chips' model changes only when the list does (not on every key).
+        let recent: Vec<slint::SharedString> = self.settings.recent_searches.iter().take(RECENT_SHOWN).map(shared).collect();
+        if state.get_recent().iter().ne(recent.iter().cloned()) {
+            state.set_recent(ModelRc::new(VecModel::from(recent)));
+        }
         state.set_recent_focused(s.recent_focus.map_or(-1, |i| i as i32));
         state.set_searching(s.searching > 0);
         let has_results = s.rows.iter().any(RowCtl::is_navigable);
@@ -109,7 +115,13 @@ impl Controller {
         state.set_hint(hint.into());
     }
 
+    /// The recent-search chips show (the same rule as search.slint's `show-recent`).
+    fn recent_shown(&self) -> bool {
+        self.search.query.is_empty() && !self.settings.recent_searches.is_empty() && self.search.searching == 0
+    }
+
     fn query_changed(&mut self) {
+        self.search.recent_focus = None;
         self.push_search();
         // Search 350 ms after the last key press.
         self.search.debounce.start(slint::TimerMode::SingleShot, Duration::from_millis(350), || {
@@ -219,7 +231,11 @@ impl Controller {
                     }
                 }
                 Key::Up => {
-                    self.search.keyboard.step(0, -1);
+                    // From the top row: the recent searches, when they show.
+                    if !self.search.keyboard.step(0, -1) && self.recent_shown() {
+                        self.search.keyboard_active = false;
+                        self.search.recent_focus = Some(0);
+                    }
                 }
                 Key::Down => {
                     self.search.keyboard.step(0, 1);
@@ -247,8 +263,14 @@ impl Controller {
                     self.search.recent_focus = None;
                     self.search.keyboard_active = true;
                 }
-                Key::Right => self.search.recent_focus = Some((index + 1).min(count.saturating_sub(1))),
-                Key::Down => self.search.recent_focus = None,
+                Key::Right => self.search.recent_focus = Some((index + 1).min(count.min(RECENT_SHOWN).saturating_sub(1))),
+                Key::Down => {
+                    self.search.recent_focus = None;
+                    // Back to wherever focus came from: results, or the keyboard.
+                    if !self.search.rows.iter().any(RowCtl::is_navigable) {
+                        self.search.keyboard_active = true;
+                    }
+                }
                 Key::Ok => {
                     self.search.recent_focus = None;
                     if let Some(query) = self.settings.recent_searches.get(index).cloned() {
@@ -275,10 +297,7 @@ impl Controller {
                 let target = if key == Key::Up { row_index.checked_sub(1) } else { Some(row_index + 1) };
                 if let Some(t) = target.filter(|t| self.search.rows.get(*t).is_some_and(RowCtl::is_navigable)) {
                     self.search.row = t;
-                } else if key == Key::Up
-                    && self.search.query.trim().is_empty()
-                    && !self.settings.recent_searches.is_empty()
-                {
+                } else if key == Key::Up && self.recent_shown() {
                     self.search.recent_focus = Some(0);
                     // The row behind the chips goes back to its start.
                     let row = &mut self.search.rows[row_index];
@@ -319,7 +338,7 @@ impl Controller {
                         self.save_settings(|s| {
                             s.recent_searches.retain(|q| !q.eq_ignore_ascii_case(&query));
                             s.recent_searches.insert(0, query);
-                            s.recent_searches.truncate(6);
+                            s.recent_searches.truncate(RECENT_SHOWN);
                         });
                     }
                     self.open(item.target);

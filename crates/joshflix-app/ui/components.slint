@@ -367,6 +367,8 @@ export component Chip inherits Rectangle {
     in property <bool> selected;
     // A ▾ icon: the chip opens a list.
     in property <bool> dropdown;
+    // Longer labels are cut short with "…" (0 = no limit).
+    in property <length> max-label: 0px;
     height: 28px;
     width: chip-row.preferred-width + 24px;
     border-radius: 14px;
@@ -377,12 +379,14 @@ export component Chip inherits Rectangle {
     chip-row := HorizontalLayout {
         alignment: center;
         spacing: 6px;
-        Text {
+        label-text := Text {
             text: root.label;
             color: (root.focused || root.selected) ? Theme.text : Theme.text-muted;
             font-size: Theme.text-sm;
             font-weight: 600;
             vertical-alignment: center;
+            max-width: root.max-label > 0px ? root.max-label : 10000px;
+            overflow: elide;
         }
         if root.dropdown: Image {
             source: Icons.chevron-down;

@@ -51,6 +51,7 @@ enum Action {
     MaxResolution,
     MaxSize,
     CheckUpdate,
+    ClearRecent,
 }
 
 struct Item {
@@ -161,7 +162,7 @@ impl Controller {
             1 => vec![
                 Item::toggle("Autoplay next episode", s.autoplay_next, "Starts the next one when an episode ends", Action::AutoplayNext),
                 Item::toggle("Match frame rate", s.frame_rate_matching, "Switches the TV to the video's frame rate (24p…) when supported", Action::FrameRate),
-                Item::toggle("Audio Normalization by default", s.audio_normalization, "Quieter loud scenes, clearer dialogue. Toggle anytime in the player", Action::AudioNormalization),
+                Item::toggle("Audio Normalization by default", s.audio_normalization, "Quieter loud scenes, clearer dialogue. Toggle anytime in the player.", Action::AudioNormalization),
                 Item::choice(
                     "Video decoding",
                     match s.video_compat_mode {
@@ -211,8 +212,14 @@ impl Controller {
                 Item::action(
                     "Check for updates",
                     self.settings_ctl.update_status.clone(),
-                    "Updates come from the private server on the dev box",
+                    "Updates come from your home server.",
                     Action::CheckUpdate,
+                ),
+                Item::action(
+                    "Clear recent searches",
+                    if self.settings.recent_searches.is_empty() { "None".into() } else { String::new() },
+                    "Removes the searches shown on the Search screen.",
+                    Action::ClearRecent,
                 ),
                 Item::info("Device", self.platform.device_label()),
                 Item::info("Sources", "Comet (ElfHosted) · Cinemeta · OpenSubtitles"),
@@ -269,8 +276,17 @@ impl Controller {
         }
         if let Some(index) = self.settings_ctl.language_picker {
             match key {
-                Key::Up => self.settings_ctl.language_picker = Some(index.saturating_sub(1)),
-                Key::Down => self.settings_ctl.language_picker = Some((index + 1).min(LANGUAGES.len() - 1)),
+                Key::Up => {
+                    self.settings_ctl.language_picker = Some(index.saturating_sub(1));
+                    SettingsState::get(&self.ui).set_picker_index(index.saturating_sub(1) as i32);
+                    return true;
+                }
+                Key::Down => {
+                    let next = (index + 1).min(LANGUAGES.len() - 1);
+                    self.settings_ctl.language_picker = Some(next);
+                    SettingsState::get(&self.ui).set_picker_index(next as i32);
+                    return true;
+                }
                 Key::Ok => {
                     self.settings_ctl.language_picker = None;
                     let code = LANGUAGES[index].0.to_owned();
@@ -339,6 +355,10 @@ impl Controller {
             Action::RemoveKey if ok => {
                 self.confirm_remove_key();
                 return;
+            }
+            Action::ClearRecent if ok => {
+                self.save_settings(|s| s.recent_searches.clear());
+                self.toast("Recent searches cleared");
             }
             Action::CheckUpdate if ok => {
                 self.check_for_update(true);

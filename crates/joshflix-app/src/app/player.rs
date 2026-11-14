@@ -839,20 +839,23 @@ impl Controller {
             queued: None,
             queued_prev_at: None,
             marked_prev_at: None,
+            marked_earlier: Vec::new(),
         };
         let watched = progress.is_watched();
         // Finished: the show moves on to the next episode in Continue Watching.
-        let next = p.next.request.as_ref().filter(|_| watched).map(|next| joshflix_core::store::LaterEpisode {
-            video: next.video.clone(),
-            title: next.context.episode_title.clone(),
-            thumbnail: next.context.thumbnail.clone(),
-        });
+        // Every aired episode after this one: a rewatch moves on to the
+        // first not yet watched (or the one in progress), not just the next.
+        let later = if watched {
+            r.context.detail.as_deref().map(|meta| super::actions::later_in(meta, &r.video)).unwrap_or_default()
+        } else {
+            Vec::new()
+        };
         // Database writes fsync: they go to the ordered writer thread, never
         // the thread that renders video. The page the player returns to read
         // the store before this landed, so it refreshes when it does.
         self.store_write(
             move |store| {
-                if let Err(e) = store.save_progress_and_queue(progress, next) {
+                if let Err(e) = store.save_progress_and_queue(progress, &later) {
                     tracing::warn!("save progress: {e}");
                 }
             },

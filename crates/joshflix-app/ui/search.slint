@@ -18,7 +18,7 @@ export component SearchScreen inherits Rectangle {
     // Recent searches (shown while nothing is typed); -1 = none focused.
     in property <[string]> recent;
     in property <int> recent-focused: -1;
-    property <bool> show-recent: root.query == "" && root.recent.length > 0 && !root.searching && root.hint == "";
+    property <bool> show-recent: root.query == "" && root.recent.length > 0 && !root.searching;
     in property <length> left-pad: Theme.rail-collapsed + 28px;
 
     property <length> kb-w: 6 * (34px + 5px) - 5px;
@@ -114,7 +114,7 @@ export component SearchScreen inherits Rectangle {
             wrap: word-wrap;
         }
         if root.show-recent: HorizontalLayout {
-            x: 0;
+            x: 14px;  // in line with the posters
             y: 12px - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
             height: 28px;
             spacing: 8px;
@@ -128,6 +128,7 @@ export component SearchScreen inherits Rectangle {
                 vertical-alignment: center;
             }
             for query[i] in root.recent: Chip {
+                max-label: 130px;
                 label: query;
                 focused: root.active && i == root.recent-focused;
             }

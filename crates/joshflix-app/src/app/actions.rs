@@ -99,9 +99,10 @@ impl Controller {
                 ("Mark as watched", icons.get_check(), true, DialogAction::MarkWatched)
             };
             let mut buttons = vec![mark];
-            // Catching up after watching elsewhere: everything before it too.
-            if video.episode.is_some_and(|e| e > 1) || video.season.is_some_and(|s| s > 1) {
-                buttons.push(("Mark earlier episodes as watched", icons.get_rewind(), false, DialogAction::MarkEarlierWatched));
+            // Catching up after watching elsewhere: everything before it too
+            // (offered while some earlier episode isn't watched yet).
+            if self.earlier_unwatched(&video) {
+                buttons.push(("Mark watched up to here", icons.get_rewind(), false, DialogAction::MarkEarlierWatched));
             }
             buttons.push(("Cancel", icons.get_back(), false, DialogAction::Close));
             self.menu_target = Some(MenuTarget::Episode { video });
@@ -201,6 +202,8 @@ impl Controller {
     /// episode the card stands for (moving the show on to the next).
     fn mark_show_card_watched(&mut self, card: RowItem) {
         let Some(record) = card.progress_record.clone() else { return };
+        let label = record.video.episode_label().unwrap_or_default().replace('E', " E");
+        self.toast(&format!("Marking {label} as watched…"));
         let cinemeta = self.svc.cinemeta.clone();
         let id = card.id.clone();
         self.spawn(async move { cinemeta.meta(MediaKind::Series, &id).await }, move |c, meta| {
@@ -210,8 +213,11 @@ impl Controller {
             };
             let later = later_in(&meta, &record.video);
             let template = Progress { position_secs: 0.0, up_next: false, ..record };
-            c.store_write(move |store| store.mark_watched(template, &[], &later).map(|()| "Marked as watched"), |c, result| {
-                c.sheet_done(result)
+            c.store_write(move |store| store.mark_watched(template, &[], &later), move |c, result| {
+                c.sheet_done(result.map(|()| "Marked as watched"));
+                if c.dialog.is_none() {
+                    c.toast(&format!("Marked {label} as watched"));
+                }
             });
         });
     }
@@ -238,17 +244,36 @@ impl Controller {
             queued: None,
             queued_prev_at: None,
             marked_prev_at: None,
+            marked_earlier: Vec::new(),
         })
     }
 
-    /// The regular episodes before `video` in the open show, oldest first.
+    /// Whether some regular episode before `video` isn't watched yet.
+    fn earlier_unwatched(&self, video: &VideoRef) -> bool {
+        let Some(detail) = self.detail.as_ref() else { return false };
+        let Some(meta) = detail.meta.as_deref() else { return false };
+        let (Some(season), Some(episode)) = (video.season, video.episode) else { return false };
+        meta.episodes
+            .iter()
+            .filter(|e| e.season != 0 && (e.season, e.episode) < (season, episode))
+            .any(|e| !detail.progress_of(&e.id).is_some_and(Progress::is_watched))
+    }
+
+    /// The regular episodes before `video` in the open show, oldest first
+    /// (one pass: the show's names and art are cloned once per episode).
     fn earlier_episodes(&self, video: &VideoRef) -> Vec<Progress> {
+        let Some(template) = self.episode_template(video) else { return Vec::new() };
         let Some(meta) = self.detail.as_ref().and_then(|d| d.meta.clone()) else { return Vec::new() };
         let (Some(season), Some(episode)) = (video.season, video.episode) else { return Vec::new() };
         meta.episodes
             .iter()
             .filter(|e| e.season != 0 && (e.season, e.episode) < (season, episode))
-            .filter_map(|e| self.episode_template(&VideoRef::episode(&video.meta_id, e.season, e.episode)))
+            .map(|e| Progress {
+                video: VideoRef::episode(&video.meta_id, e.season, e.episode),
+                episode_title: Some(e.title.clone()),
+                thumbnail: e.thumbnail.clone(),
+                ..template.clone()
+            })
             .collect()
     }
 
@@ -259,7 +284,7 @@ impl Controller {
 }
 
 /// The aired episodes after `video` in `meta`, in order.
-fn later_in(meta: &joshflix_core::cinemeta::MetaDetail, video: &VideoRef) -> Vec<LaterEpisode> {
+pub(super) fn later_in(meta: &joshflix_core::cinemeta::MetaDetail, video: &VideoRef) -> Vec<LaterEpisode> {
     let (Some(mut season), Some(mut episode)) = (video.season, video.episode) else { return Vec::new() };
     let today = crate::format::today();
     let mut later = Vec::new();
@@ -297,6 +322,7 @@ fn card_progress(card: &RowItem) -> Progress {
         queued: None,
         queued_prev_at: None,
         marked_prev_at: None,
+        marked_earlier: Vec::new(),
     }
 }
 

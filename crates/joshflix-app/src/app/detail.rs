@@ -79,6 +79,10 @@ const SEASON_SETTLE: std::time::Duration = std::time::Duration::from_millis(220)
 const EPISODE_AHEAD: std::time::Duration = std::time::Duration::from_millis(600);
 
 impl DetailCtl {
+    pub(super) fn progress_of(&self, video_id: &str) -> Option<&Progress> {
+        self.progress.get(video_id)
+    }
+
     /// The focused episode card (video, sheet title, watched).
     pub(super) fn focused_episode(&self) -> Option<(VideoRef, String, bool)> {
         if self.zone != 2 {
@@ -250,7 +254,8 @@ impl Controller {
         let icons = Icons::get(&self.ui);
         let today = format::today();
         let Some(detail) = self.detail.as_mut() else { return };
-        detail.in_library = self.svc.store.in_library(&detail.id).unwrap_or(false);
+        // `in_library` is read when the page opens and flipped by My List:
+        // reading the store here would undo a flip whose write is still queued.
         let progress: HashMap<String, Progress> = self
             .svc
             .store
@@ -591,6 +596,11 @@ impl Controller {
         let Some(detail) = self.detail.as_ref() else { return };
         let Some(preview) = detail.preview.clone() else { return };
         let (id, remove) = (detail.id.clone(), detail.in_library);
+        // The button flips at once; the write follows on the writer thread.
+        if let Some(detail) = self.detail.as_mut() {
+            detail.in_library = !remove;
+        }
+        self.refresh_detail_progress();
         // The write (an fsync) runs on the store's writer thread.
         self.store_write(
             move |store| {
