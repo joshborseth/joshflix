@@ -164,7 +164,8 @@ impl Controller {
                 let Some(template) = self.episode_template(&video) else { return };
                 let later = self.later_episodes(&video);
                 let earlier = if action == DialogAction::MarkEarlierWatched { self.earlier_episodes(&video) } else { Vec::new() };
-                let message = if earlier.is_empty() { "Marked as watched" } else { "Marked as watched up to here" };
+                let message =
+                    if earlier.is_empty() { "Marked as watched" } else { "Marked as watched up to here · Mark this one unwatched to undo" };
                 Box::new(move |store| store.mark_watched(template, &earlier, &later).map(|()| message))
             }
             (DialogAction::MarkUnwatched, MenuTarget::Card(card)) => {
@@ -214,9 +215,10 @@ impl Controller {
             let later = later_in(&meta, &record.video);
             let template = Progress { position_secs: 0.0, up_next: false, ..record };
             c.store_write(move |store| store.mark_watched(template, &[], &later), move |c, result| {
+                let failed = result.is_err();
                 c.sheet_done(result.map(|()| "Marked as watched"));
-                if c.dialog.is_none() {
-                    c.toast(&format!("Marked {label} as watched"));
+                if !failed {
+                    c.toast(&format!("Marked {label} as watched · Mark it unwatched on the show page to undo"));
                 }
             });
         });

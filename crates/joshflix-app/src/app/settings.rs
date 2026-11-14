@@ -357,8 +357,12 @@ impl Controller {
                 return;
             }
             Action::ClearRecent if ok => {
-                self.save_settings(|s| s.recent_searches.clear());
-                self.toast("Recent searches cleared");
+                if self.settings.recent_searches.is_empty() {
+                    self.toast("No recent searches");
+                } else {
+                    self.save_settings(|s| s.recent_searches.clear());
+                    self.toast("Recent searches cleared");
+                }
             }
             Action::CheckUpdate if ok => {
                 self.check_for_update(true);

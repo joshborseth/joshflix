@@ -25,6 +25,8 @@ pub struct SearchCtl {
     caret_on: bool,
     /// Focus is on the recent-search chips (which one).
     recent_focus: Option<usize>,
+    /// The chips were entered from the keyboard (Down goes back there).
+    recent_from_keyboard: bool,
 }
 
 /// Caret blink half-period.
@@ -58,6 +60,7 @@ impl SearchCtl {
             caret: slint::Timer::default(),
             caret_on: true,
             recent_focus: None,
+            recent_from_keyboard: false,
         }
     }
 }
@@ -189,7 +192,7 @@ impl Controller {
                 let (model, urls) = (row.model.clone(), row.image_urls());
                 let end = urls.len().min(8);
                 c.load_posters(&model, &urls, 0..end, super::ImageKind::Poster);
-                if (c.search.keyboard_active || !c.search.rows[c.search.row].is_navigable())
+                if (c.search.keyboard_active || c.search.recent_focus.is_none() && !c.search.rows.get(c.search.row).is_some_and(RowCtl::is_navigable))
                     && let Some(first) = c.search.rows.iter().position(RowCtl::is_navigable)
                 {
                     c.search.row = first;
@@ -235,6 +238,9 @@ impl Controller {
                     if !self.search.keyboard.step(0, -1) && self.recent_shown() {
                         self.search.keyboard_active = false;
                         self.search.recent_focus = Some(0);
+                        self.search.recent_from_keyboard = true;
+                        // Results unscrolled, so the chips above them show.
+                        self.search.row = self.search.rows.iter().position(RowCtl::is_navigable).unwrap_or(0);
                     }
                 }
                 Key::Down => {
@@ -266,13 +272,15 @@ impl Controller {
                 Key::Right => self.search.recent_focus = Some((index + 1).min(count.min(RECENT_SHOWN).saturating_sub(1))),
                 Key::Down => {
                     self.search.recent_focus = None;
-                    // Back to wherever focus came from: results, or the keyboard.
-                    if !self.search.rows.iter().any(RowCtl::is_navigable) {
+                    // Back to wherever focus came from: the keyboard, or the results.
+                    if self.search.recent_from_keyboard || !self.search.rows.iter().any(RowCtl::is_navigable) {
                         self.search.keyboard_active = true;
                     }
                 }
                 Key::Ok => {
                     self.search.recent_focus = None;
+                    // Focus goes to the first row with results once they come.
+                    self.search.row = 0;
                     if let Some(query) = self.settings.recent_searches.get(index).cloned() {
                         self.search.query = query;
                         self.search.debounce.stop();
@@ -299,6 +307,7 @@ impl Controller {
                     self.search.row = t;
                 } else if key == Key::Up && self.recent_shown() {
                     self.search.recent_focus = Some(0);
+                    self.search.recent_from_keyboard = false;
                     // The row behind the chips goes back to its start.
                     let row = &mut self.search.rows[row_index];
                     if row.focused != 0 {

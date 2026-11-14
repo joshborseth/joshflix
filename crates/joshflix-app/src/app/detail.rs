@@ -621,10 +621,16 @@ impl Controller {
                         .map(|_| "Added to My List")
                 }
             },
-            |c, result| {
+            move |c, result| {
                 match result {
                     Ok(message) => c.toast(message),
-                    Err(e) => c.toast(&e.to_string()),
+                    Err(e) => {
+                        // The button flipped ahead of the write: flip it back.
+                        if let Some(detail) = c.detail.as_mut() {
+                            detail.in_library = remove;
+                        }
+                        c.toast(&format!("Couldn't update My List: {e}"));
+                    }
                 }
                 if c.screen == Screen::Detail {
                     c.refresh_detail_progress();
