@@ -453,9 +453,10 @@ public final class ExoBridge {
         trackSelector = new DefaultTrackSelector(context);
         trackSelector.setParameters(trackSelector.buildUponParameters().setTunnelingEnabled(false));
 
-        // Buffers live on the Java heap: a quarter of it, between 32 and 160 MB.
+        // Buffers live on the Java heap (large, see the manifest), which holds
+        // little else: a third of it, between 32 and 160 MB.
         long heap = Runtime.getRuntime().maxMemory();
-        int targetBytes = (int) Math.max(32L << 20, Math.min(160L << 20, heap / 4));
+        int targetBytes = (int) Math.max(32L << 20, Math.min(160L << 20, heap / 3));
         DefaultLoadControl loadControl = new DefaultLoadControl.Builder()
                 .setBufferDurationsMs(MIN_BUFFER_MS, MAX_BUFFER_MS, START_BUFFER_MS, REBUFFER_MS)
                 .setTargetBufferBytes(targetBytes)

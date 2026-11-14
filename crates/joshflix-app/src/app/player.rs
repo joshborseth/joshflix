@@ -154,9 +154,15 @@ impl PlayerCtl {
 
 impl Controller {
     /// The player for `url`: ExoPlayer on a TV, unless Settings ask for mpv
-    /// or ExoPlayer already failed on this stream.
+    /// or ExoPlayer already failed on this stream. ExoPlayer also needs the
+    /// separate video layer, which mpv's own checks can switch off mid-run
+    /// (the UI then draws opaque over anything under it).
     fn engine_for(&self, url: &str) -> Engine {
-        if self.video.exo_ok() && !self.settings.use_mpv && self.mpv_for.as_deref() != Some(url) {
+        if self.video.exo_ok()
+            && crate::video::surface_mode()
+            && !self.settings.use_mpv
+            && self.mpv_for.as_deref() != Some(url)
+        {
             Engine::Exo
         } else {
             Engine::Mpv
