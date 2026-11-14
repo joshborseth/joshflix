@@ -189,6 +189,8 @@ pub struct Store {
     /// Continue Watching as last computed; cleared by every progress write
     /// (it reads every record, and Home asks for it on every visit).
     continue_cache: Arc<std::sync::Mutex<Option<Vec<Progress>>>>,
+    /// Bumped by every progress write: a list computed across a write isn't cached.
+    progress_generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl Store {
@@ -202,7 +204,7 @@ impl Store {
         txn.open_table(LIBRARY)?;
         txn.open_table(PROGRESS)?;
         txn.commit()?;
-        Ok(Self { db: Arc::new(db), continue_cache: Arc::default() })
+        Ok(Self { db: Arc::new(db), continue_cache: Arc::default(), progress_generation: Arc::default() })
     }
 
     pub fn settings(&self) -> Result<Settings> {
@@ -468,6 +470,7 @@ impl Store {
     }
 
     fn progress_changed(&self) {
+        self.progress_generation.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         if let Ok(mut cache) = self.continue_cache.lock() {
             *cache = None;
         }
@@ -476,11 +479,16 @@ impl Store {
     /// Continue Watching: per title, the most recent unfinished video or "up next"
     /// episode, newest first.
     pub fn continue_watching(&self, limit: usize) -> Result<Vec<Progress>> {
-        if let Some(rows) = self.continue_cache.lock().ok().and_then(|cache| cache.clone()) {
-            return Ok(rows.into_iter().take(limit).collect());
+        if let Ok(cache) = self.continue_cache.lock()
+            && let Some(rows) = cache.as_ref()
+        {
+            return Ok(rows.iter().take(limit).cloned().collect());
         }
+        let generation = self.progress_generation.load(std::sync::atomic::Ordering::SeqCst);
         let rows = self.compute_continue_watching()?;
-        if let Ok(mut cache) = self.continue_cache.lock() {
+        if let Ok(mut cache) = self.continue_cache.lock()
+            && self.progress_generation.load(std::sync::atomic::Ordering::SeqCst) == generation
+        {
             *cache = Some(rows.clone());
         }
         Ok(rows.into_iter().take(limit).collect())

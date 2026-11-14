@@ -89,7 +89,8 @@ impl VideoRef {
 
     /// `S03E04` style label, or `None` for movies.
     pub fn episode_label(&self) -> Option<String> {
-        Some(format!("S{:02}E{:02}", self.season?, self.episode?))
+        // One style on every screen: "S03 E04".
+        Some(format!("S{:02} E{:02}", self.season?, self.episode?))
     }
 }
 
@@ -110,7 +111,7 @@ mod tests {
         let movie = VideoRef::movie("tt15239678");
         assert_eq!(VideoRef::from_video_id(MediaKind::Movie, "tt15239678"), Some(movie));
         assert_eq!(VideoRef::from_video_id(MediaKind::Series, "tt1:x:2"), None);
-        assert_eq!(VideoRef::episode("tt1", 3, 4).episode_label().as_deref(), Some("S03E04"));
+        assert_eq!(VideoRef::episode("tt1", 3, 4).episode_label().as_deref(), Some("S03 E04"));
         assert!(is_imdb_id("tt0903747"));
         assert!(!is_imdb_id("kitsu:1"));
     }

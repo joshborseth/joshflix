@@ -120,7 +120,7 @@ impl Controller {
             .as_ref()
             .filter(|p| card.kind == MediaKind::Series && !p.is_watched())
             .and_then(|p| p.video.episode_label())
-            .map(|label| format!("Mark {} as watched", label.replace('E', " E")));
+            .map(|label| format!("Mark {label} as watched"));
         if let Some(label) = &episode_label {
             buttons.push((label.as_str(), icons.get_check(), false, DialogAction::MarkWatched));
         }
@@ -203,7 +203,7 @@ impl Controller {
     /// episode the card stands for (moving the show on to the next).
     fn mark_show_card_watched(&mut self, card: RowItem) {
         let Some(record) = card.progress_record.clone() else { return };
-        let label = record.video.episode_label().unwrap_or_default().replace('E', " E");
+        let label = record.video.episode_label().unwrap_or_default();
         self.toast(&format!("Marking {label} as watched…"));
         let cinemeta = self.svc.cinemeta.clone();
         let id = card.id.clone();
@@ -287,18 +287,21 @@ impl Controller {
 
 /// The aired episodes after `video` in `meta`, in order.
 pub(super) fn later_in(meta: &joshflix_core::cinemeta::MetaDetail, video: &VideoRef) -> Vec<LaterEpisode> {
-    let (Some(mut season), Some(mut episode)) = (video.season, video.episode) else { return Vec::new() };
+    let (Some(season), Some(episode)) = (video.season, video.episode) else { return Vec::new() };
+    // The list is in order: one walk forward from this episode, regular
+    // seasons only, up to the first that hasn't aired.
+    let Some(at) = meta.episodes.iter().position(|e| e.season == season && e.episode == episode) else { return Vec::new() };
     let today = crate::format::today();
-    let mut later = Vec::new();
-    while let Some(next) = meta.next_episode(season, episode).filter(|n| n.is_released(&today)) {
-        (season, episode) = (next.season, next.episode);
-        later.push(LaterEpisode {
-            video: VideoRef::episode(&video.meta_id, next.season, next.episode),
-            title: Some(next.title.clone()),
-            thumbnail: next.thumbnail.clone(),
-        });
-    }
-    later
+    meta.episodes[at + 1..]
+        .iter()
+        .filter(|e| e.season != 0)
+        .take_while(|e| e.is_released(&today))
+        .map(|e| LaterEpisode {
+            video: VideoRef::episode(&video.meta_id, e.season, e.episode),
+            title: Some(e.title.clone()),
+            thumbnail: e.thumbnail.clone(),
+        })
+        .collect()
 }
 
 fn card_progress(card: &RowItem) -> Progress {

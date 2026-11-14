@@ -103,9 +103,10 @@ export component SearchScreen inherits Rectangle {
             y: 16px - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
         }
         // Scrolls away with the rows (they'd slide over it otherwise).
+        // Under the recent chips when both show (offline with nothing typed).
         if !root.searching && root.hint != "": Text {
             x: 0;
-            y: 18px - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
+            y: (root.show-recent ? 52px : 18px) - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
             animate y { duration: Theme.med; easing: ease-out-quart; }
             width: parent.width - Theme.safe-x;
             text: root.hint;
@@ -128,13 +129,13 @@ export component SearchScreen inherits Rectangle {
                 vertical-alignment: center;
             }
             for query[i] in root.recent: Chip {
-                max-label: 130px;
+                max-label: 90px;  // four fit beside the keyboard
                 label: query;
                 focused: root.active && i == root.recent-focused;
             }
         }
         VerticalLayout {
-            y: (root.hint != "" || root.searching || root.show-recent ? 56px : 6px) - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
+            y: (root.hint != "" && root.show-recent ? 96px : root.hint != "" || root.searching || root.show-recent ? 56px : 6px) - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
             alignment: start;
             animate y { duration: Theme.med; easing: ease-out-quart; }
             for row[i] in root.rows: PosterRow {

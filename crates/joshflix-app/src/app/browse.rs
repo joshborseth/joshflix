@@ -107,7 +107,7 @@ impl RowItem {
                 logo: p.logo.clone(),
                 backdrop: p.background.clone(),
                 meta: match (&p.video.episode_label(), &p.episode_title) {
-                    (Some(label), Some(title)) => format!("{label}  ·  {title}"),
+                    (Some(label), Some(title)) => format!("{label} · {title}"),
                     (Some(label), None) => label.clone(),
                     _ => format::time_left(p.duration_secs - p.position_secs),
                 },
