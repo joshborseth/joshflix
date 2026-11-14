@@ -161,7 +161,7 @@ export component DetailScreen inherits Rectangle {
     VerticalLayout {
         x: Theme.safe-x;
         y: root.is-series
-            ? max(Theme.safe-y, root.height - 232px - self.preferred-height - 22px)
+            ? max(Theme.safe-y, root.height - 246px - self.preferred-height - 22px)
             : Theme.safe-y + 20px;
         width: min(440px, root.width * 0.48);
         spacing: 9px;
@@ -238,7 +238,8 @@ export component DetailScreen inherits Rectangle {
         }
         Rectangle { height: 4px; }
         HorizontalLayout {
-            spacing: 10px;
+            // Room for the first button's growth to the right when focused.
+            spacing: 16px;
             alignment: start;
             for button[i] in root.buttons: PillButton {
                 grow-right: i == 0;
@@ -252,7 +253,8 @@ export component DetailScreen inherits Rectangle {
 
     // Seasons and episodes.
     if root.is-series: Rectangle {
-        y: root.height - 232px;
+        // 14px above the canvas bottom's overscan band (dates stay inside safe-y).
+        y: root.height - 246px;
         height: 232px;
 
         // Season chips: equal widths, so the row can scroll to keep the

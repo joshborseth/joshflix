@@ -8,7 +8,7 @@ export component PosterCard inherits Rectangle {
     in property <bool> focused;
     in property <bool> show-title: false;
     width: Theme.poster-w;
-    height: Theme.poster-h + (show-title ? 42px : 0px);
+    height: Theme.poster-h + (show-title ? 39px : 0px);
 
     // Culling box: see CULL.
     Rectangle {
@@ -106,7 +106,7 @@ export component PosterCard inherits Rectangle {
             }
 
             if root.show-title: Text {
-                y: Theme.poster-h + 8px;
+                y: Theme.poster-h + 5px;
                 width: parent.width;
                 text: root.item.title;
                 color: root.focused ? Theme.text : Theme.text-muted;

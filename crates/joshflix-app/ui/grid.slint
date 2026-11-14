@@ -12,7 +12,8 @@ export component PosterGrid inherits Rectangle {
     in property <length> pad-x: 24px;
     in property <length> pad-y: 8px;
     property <length> cell-w: Theme.poster-w + 18px;
-    property <length> cell-h: Theme.poster-h + 62px;
+    // Two rows and a peek of the third fit, with titles above the overscan band.
+    property <length> cell-h: Theme.poster-h + 50px;
     property <int> focused-line: root.focused-index < 0 ? 0 : floor(root.focused-index / root.columns);
     property <length> grid-w: root.columns * root.cell-w;
     clip: true;

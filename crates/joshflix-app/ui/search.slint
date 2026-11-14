@@ -45,7 +45,7 @@ export component SearchScreen inherits Rectangle {
             Text {
                 x: 36px;
                 width: parent.width - 48px;
-                text: root.query == "" ? "Search movies and shows" : root.query;
+                text: root.query == "" ? "Movies and shows" : root.query;
                 color: root.query == "" ? Theme.text-faint : Theme.text;
                 font-size: Theme.text-lg;
                 font-weight: root.query == "" ? 400 : 600;
@@ -96,7 +96,7 @@ export component SearchScreen inherits Rectangle {
 
         if root.searching: Spinner {
             x: 0;
-            y: 16px;
+            y: 16px - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
         }
         // Scrolls away with the rows (they'd slide over it otherwise).
         if !root.searching && root.hint != "": Text {
