@@ -98,14 +98,30 @@ impl Controller {
             } else {
                 ("Mark as watched", icons.get_check(), true, DialogAction::MarkWatched)
             };
+            let mut buttons = vec![mark];
+            // Catching up after watching elsewhere: everything before it too.
+            if video.episode.is_some_and(|e| e > 1) || video.season.is_some_and(|s| s > 1) {
+                buttons.push(("Mark earlier episodes as watched", icons.get_check(), false, DialogAction::MarkEarlierWatched));
+            }
+            buttons.push(("Cancel", icons.get_back(), false, DialogAction::Close));
             self.menu_target = Some(MenuTarget::Episode { video });
-            self.show_sheet(&title, vec![mark, ("Cancel", icons.get_back(), false, DialogAction::Close)]);
+            self.show_sheet(&title, buttons);
             return;
         }
         let Some(card) = self.focused_card() else { return };
         let mut buttons = Vec::new();
         if card.progress_record.is_some() {
             buttons.push(("Remove from Continue Watching", icons.get_close(), true, DialogAction::RemoveFromContinue));
+        }
+        // A show's Continue Watching card stands for one episode: skip it from here.
+        let episode_label = card
+            .progress_record
+            .as_ref()
+            .filter(|p| card.kind == MediaKind::Series && !p.is_watched())
+            .and_then(|p| p.video.episode_label())
+            .map(|label| format!("Mark {label} as watched"));
+        if let Some(label) = &episode_label {
+            buttons.push((label.as_str(), icons.get_check(), false, DialogAction::MarkWatched));
         }
         let watched = card.progress_record.as_ref().is_some_and(Progress::is_watched)
             || (card.kind == MediaKind::Movie
@@ -129,48 +145,34 @@ impl Controller {
 
     pub(super) fn sheet_action(&mut self, action: DialogAction) {
         let Some(target) = self.menu_target.take() else { return };
-        let store = self.svc.store.clone();
-        // Store work runs off the UI thread (each write is an fsync on TV
-        // flash); the toast and the refresh follow when it's done.
-        let job: Box<dyn FnOnce() -> joshflix_core::Result<&'static str> + Send> = match (action, target) {
+        type Job = Box<dyn FnOnce(&joshflix_core::store::Store) -> joshflix_core::Result<&'static str> + Send>;
+        let job: Job = match (action, target) {
             (DialogAction::RemoveFromContinue, MenuTarget::Card(card)) => {
-                Box::new(move || store.hide_from_continue(&card.id).map(|()| "Removed from Continue Watching"))
+                Box::new(move |store| store.hide_from_continue(&card.id).map(|()| "Removed from Continue Watching"))
+            }
+            (DialogAction::MarkWatched, MenuTarget::Card(card)) if card.kind == MediaKind::Series => {
+                // The show's Continue Watching card: mark its current episode.
+                self.mark_show_card_watched(card);
+                return;
             }
             (DialogAction::MarkWatched, MenuTarget::Card(card)) => {
                 let template = card_progress(&card);
-                Box::new(move || store.mark_watched(template, &[]).map(|()| "Marked as watched"))
+                Box::new(move |store| store.mark_watched(template, &[], &[]).map(|()| "Marked as watched"))
             }
-            (DialogAction::MarkWatched, MenuTarget::Episode { video }) => {
-                let Some(request) = self.play_request(video.clone(), None, None) else { return };
+            (DialogAction::MarkWatched | DialogAction::MarkEarlierWatched, MenuTarget::Episode { video }) => {
+                let Some(template) = self.episode_template(&video) else { return };
                 let later = self.later_episodes(&video);
-                let c = request.context;
-                let template = Progress {
-                    video,
-                    name: c.name,
-                    episode_title: c.episode_title,
-                    poster: c.poster,
-                    background: c.background,
-                    thumbnail: c.thumbnail,
-                    logo: c.logo,
-                    position_secs: 0.0,
-                    duration_secs: 0.0,
-                    updated_at: 0,
-                    up_next: false,
-                    last_source: None,
-                    hidden: false,
-                    marked_from: None,
-                    queued: None,
-                    queued_prev_at: None,
-                };
-                Box::new(move || store.mark_watched(template, &later).map(|()| "Marked as watched"))
+                let earlier = if action == DialogAction::MarkEarlierWatched { self.earlier_episodes(&video) } else { Vec::new() };
+                let message = if earlier.is_empty() { "Marked as watched" } else { "Marked as watched up to here" };
+                Box::new(move |store| store.mark_watched(template, &earlier, &later).map(|()| message))
             }
             (DialogAction::MarkUnwatched, MenuTarget::Card(card)) => {
-                Box::new(move || store.unmark_watched(&VideoRef::movie(&card.id)).map(|()| "Marked as unwatched"))
+                Box::new(move |store| store.unmark_watched(&VideoRef::movie(&card.id)).map(|()| "Marked as unwatched"))
             }
             (DialogAction::MarkUnwatched, MenuTarget::Episode { video }) => {
-                Box::new(move || store.unmark_watched(&video).map(|()| "Marked as unwatched"))
+                Box::new(move |store| store.unmark_watched(&video).map(|()| "Marked as unwatched"))
             }
-            (DialogAction::ToggleList, MenuTarget::Card(card)) => Box::new(move || {
+            (DialogAction::ToggleList, MenuTarget::Card(card)) => Box::new(move |store| {
                 if store.in_library(&card.id).unwrap_or(false) {
                     store.remove_from_library(&card.id).map(|_| "Removed from My List")
                 } else {
@@ -179,41 +181,97 @@ impl Controller {
             }),
             _ => return,
         };
-        self.spawn(
-            async move { tokio::task::spawn_blocking(job).await.unwrap_or_else(|e| Err(joshflix_core::CoreError::Invalid(e.to_string()))) },
-            |c, result| {
-                match result {
-                    Ok(message) => c.toast(message),
-                    Err(e) => c.toast(&format!("Couldn't save that: {e}")),
-                }
-                match c.screen {
-                    Screen::Detail => c.refresh_detail_progress(),
-                    Screen::Browse | Screen::Mylist => c.refresh_local_rows(),
-                    _ => {}
-                }
-            },
-        );
+        // On the store's writer thread, in order with playback's saves.
+        self.store_write(job, |c, result| c.sheet_done(result));
+    }
+
+    fn sheet_done(&mut self, result: joshflix_core::Result<&'static str>) {
+        match result {
+            Ok(message) => self.toast(message),
+            Err(e) => self.toast(&format!("Couldn't save that: {e}")),
+        }
+        match self.screen {
+            Screen::Detail => self.refresh_detail_progress(),
+            Screen::Browse | Screen::Mylist => self.refresh_local_rows(),
+            _ => {}
+        }
+    }
+
+    /// A show's Continue Watching card: look the show up, then mark the
+    /// episode the card stands for (moving the show on to the next).
+    fn mark_show_card_watched(&mut self, card: RowItem) {
+        let Some(record) = card.progress_record.clone() else { return };
+        let cinemeta = self.svc.cinemeta.clone();
+        let id = card.id.clone();
+        self.spawn(async move { cinemeta.meta(MediaKind::Series, &id).await }, move |c, meta| {
+            let Ok(meta) = meta else {
+                c.toast("Couldn't look up this show. Try again from its page.");
+                return;
+            };
+            let later = later_in(&meta, &record.video);
+            let template = Progress { position_secs: 0.0, up_next: false, ..record };
+            c.store_write(move |store| store.mark_watched(template, &[], &later).map(|()| "Marked as watched"), |c, result| {
+                c.sheet_done(result)
+            });
+        });
+    }
+
+    /// Titles and art for marking an episode of the open show.
+    fn episode_template(&self, video: &VideoRef) -> Option<Progress> {
+        let request = self.play_request(video.clone(), None, None)?;
+        let c = request.context;
+        Some(Progress {
+            video: video.clone(),
+            name: c.name,
+            episode_title: c.episode_title,
+            poster: c.poster,
+            background: c.background,
+            thumbnail: c.thumbnail,
+            logo: c.logo,
+            position_secs: 0.0,
+            duration_secs: 0.0,
+            updated_at: 0,
+            up_next: false,
+            last_source: None,
+            hidden: false,
+            marked_from: None,
+            queued: None,
+            queued_prev_at: None,
+            marked_prev_at: None,
+        })
+    }
+
+    /// The regular episodes before `video` in the open show, oldest first.
+    fn earlier_episodes(&self, video: &VideoRef) -> Vec<Progress> {
+        let Some(meta) = self.detail.as_ref().and_then(|d| d.meta.clone()) else { return Vec::new() };
+        let (Some(season), Some(episode)) = (video.season, video.episode) else { return Vec::new() };
+        meta.episodes
+            .iter()
+            .filter(|e| e.season != 0 && (e.season, e.episode) < (season, episode))
+            .filter_map(|e| self.episode_template(&VideoRef::episode(&video.meta_id, e.season, e.episode)))
+            .collect()
     }
 
     /// The aired episodes after `video`, in order, for "Mark as watched".
     fn later_episodes(&self, video: &VideoRef) -> Vec<LaterEpisode> {
-        let (Some(meta), Some(mut season), Some(mut episode)) =
-            (self.detail.as_ref().and_then(|d| d.meta.clone()), video.season, video.episode)
-        else {
-            return Vec::new();
-        };
-        let today = crate::format::today();
-        let mut later = Vec::new();
-        while let Some(next) = meta.next_episode(season, episode).filter(|n| n.is_released(&today)) {
-            (season, episode) = (next.season, next.episode);
-            later.push(LaterEpisode {
-                video: VideoRef::episode(&video.meta_id, next.season, next.episode),
-                title: Some(next.title.clone()),
-                thumbnail: next.thumbnail.clone(),
-            });
-        }
-        later
+        self.detail.as_ref().and_then(|d| d.meta.clone()).map(|meta| later_in(&meta, video)).unwrap_or_default()
     }
+}
+
+/// The aired episodes after `video` in `meta`, in order.
+fn later_in(meta: &joshflix_core::cinemeta::MetaDetail, video: &VideoRef) -> Vec<LaterEpisode> {
+    let (Some(mut season), Some(mut episode)) = (video.season, video.episode) else { return Vec::new() };
+    let today = crate::format::today();
+    let mut later = Vec::new();
+    while let Some(next) = meta.next_episode(season, episode).filter(|n| n.is_released(&today)) {
+        (season, episode) = (next.season, next.episode);
+        later.push(LaterEpisode {
+            video: VideoRef::episode(&video.meta_id, next.season, next.episode),
+            title: Some(next.title.clone()),
+            thumbnail: next.thumbnail.clone(),
+        });
+    }
+    later
 }
 
 fn card_progress(card: &RowItem) -> Progress {
@@ -238,6 +296,7 @@ fn card_progress(card: &RowItem) -> Progress {
         marked_from: None,
         queued: None,
         queued_prev_at: None,
+        marked_prev_at: None,
     }
 }
 

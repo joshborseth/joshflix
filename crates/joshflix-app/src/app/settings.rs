@@ -165,7 +165,7 @@ impl Controller {
                         Some(false) => "Hardware",
                         Some(true) => "Compatibility",
                     },
-                    "Automatic copies decoded frames, which works on every TV. Hardware skips the copy but can show a black screen. Applies after restarting Joshflix",
+                    "Automatic copies decoded frames, which works on every TV. Hardware skips the copy but can show a black screen. Applies after restarting Joshflix.",
                     Action::VideoDecoding,
                 ),
             ]
@@ -174,7 +174,7 @@ impl Controller {
                 Item::toggle(
                     "Separate video layer",
                     self.video_layer_on(),
-                    "Video plays on its own layer under the menus. Turn off if video stays black. Applies after restarting Joshflix",
+                    "Video plays on its own layer under the menus. Turn off if video stays black. Applies after restarting Joshflix.",
                     Action::VideoLayer,
                 )
             }))

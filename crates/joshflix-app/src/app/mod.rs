@@ -241,6 +241,8 @@ pub struct Controller {
     menu_target: Option<actions::MenuTarget>,
     /// Sends settings to the thread that writes them (see `save_settings`).
     settings_writer: Option<std::sync::mpsc::Sender<Settings>>,
+    /// Sends progress and My List writes to their thread (see `store_write`).
+    store_writer: Option<std::sync::mpsc::Sender<StoreJob>>,
     /// The player's track menu rows.
     track_menu_model: Rc<VecModel<crate::TrackItem>>,
     toast_timer: slint::Timer,
@@ -296,6 +298,7 @@ impl Controller {
             menu_target: None,
             track_menu_model: Rc::new(VecModel::default()),
             settings_writer: None,
+            store_writer: None,
             toast_timer: slint::Timer::default(),
             tick_timer: slint::Timer::default(),
             update_available: None,
@@ -396,8 +399,32 @@ impl Controller {
         register_secrets(&settings);
         self.settings = settings.clone();
         let writer = self.settings_writer.get_or_insert_with(|| settings_writer(self.svc.store.clone()));
-        if writer.send(settings).is_err() {
-            self.toast("Couldn't save settings");
+        if let Err(unsent) = writer.send(settings) {
+            // No writer thread: write here, and try a new thread next time.
+            self.settings_writer = None;
+            if let Err(e) = self.svc.store.save_settings(&unsent.0) {
+                self.toast(&format!("Couldn't save settings: {e}"));
+            }
+        }
+    }
+
+    /// Run a progress or My List write on the store's writer thread (fsyncs
+    /// stay off the UI thread, and writes land in the order they were
+    /// made), then `done` on the UI thread.
+    pub fn store_write<T: Send + 'static>(
+        &mut self,
+        job: impl FnOnce(&Store) -> T + Send + 'static,
+        done: impl FnOnce(&mut Controller, T) + Send + 'static,
+    ) {
+        let store = self.svc.store.clone();
+        let task: StoreJob = Box::new(move || {
+            let value = job(&store);
+            let _ = slint::invoke_from_event_loop(move || with_controller(|c| done(c, value)));
+        });
+        let writer = self.store_writer.get_or_insert_with(store_writer);
+        if let Err(unsent) = writer.send(task) {
+            self.store_writer = None;
+            self.rt.spawn_blocking(unsent.0);
         }
     }
 
@@ -623,6 +650,22 @@ impl Controller {
     }
 }
 
+
+type StoreJob = Box<dyn FnOnce() + Send>;
+
+/// The thread that runs store writes one after another.
+fn store_writer() -> std::sync::mpsc::Sender<StoreJob> {
+    let (tx, rx) = std::sync::mpsc::channel::<StoreJob>();
+    let spawned = std::thread::Builder::new().name("store-writer".into()).spawn(move || {
+        while let Ok(job) = rx.recv() {
+            job();
+        }
+    });
+    if let Err(e) = spawned {
+        tracing::warn!("store writer: {e}");
+    }
+    tx
+}
 
 /// A thread that writes settings in the order they changed, skipping to the
 /// newest when several queue up.

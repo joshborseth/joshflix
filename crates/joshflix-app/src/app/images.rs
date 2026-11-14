@@ -292,7 +292,12 @@ impl Controller {
             // Applied a few per frame: each one is a texture upload in the
             // next render, and a burst (a row arriving, a season loading)
             // would otherwise all land in one frame. Stays in flight until then.
-            self.images.ready.push_back((key, url, kind, pixels));
+            // Hero artwork first: it shouldn't wait behind a row of posters.
+            if matches!(kind, ImageKind::Backdrop | ImageKind::Logo) {
+                self.images.ready.push_front((key, url, kind, pixels));
+            } else {
+                self.images.ready.push_back((key, url, kind, pixels));
+            }
             if !self.images.apply_timer.running() {
                 self.images.apply_timer.start(slint::TimerMode::Repeated, APPLY_EVERY, || with_controller(Controller::apply_ready_images));
             }
@@ -319,9 +324,24 @@ impl Controller {
     /// backdrop counting as several.
     fn apply_ready_images(&mut self) {
         let mut budget = 3;
-        while budget > 0 {
+        while let Some((_, _, kind, _)) = self.images.ready.front() {
+            let cost = if *kind == ImageKind::Backdrop { 3 } else { 1 };
+            if cost > budget {
+                break;
+            }
+            budget -= cost;
             let Some((key, url, kind, pixels)) = self.images.ready.pop_front() else { break };
-            budget -= if kind == ImageKind::Backdrop { 3 } else { 1 };
+            // A backdrop whose hero moved on while it waited: not shown, not cached.
+            let stale = self.images.backdrop_wanted.get(&key).is_some_and(|wanted| {
+                wanted.load(Ordering::Relaxed) != self.images.backdrop_generation.load(Ordering::Relaxed)
+            });
+            if stale {
+                self.images.inflight.remove(&key);
+                self.images.backdrop_wanted.remove(&key);
+                self.images.waiters.remove(&key);
+                budget += cost;
+                continue;
+            }
             self.apply_image(key, url, kind, pixels);
         }
         if self.images.ready.is_empty() {

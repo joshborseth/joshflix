@@ -838,38 +838,26 @@ impl Controller {
             marked_from: None,
             queued: None,
             queued_prev_at: None,
+            marked_prev_at: None,
         };
         let watched = progress.is_watched();
-        // Queue the next episode for Continue Watching.
-        let up_next = p.next.request.as_ref().filter(|_| watched).map(|next| Progress {
+        // Finished: the show moves on to the next episode in Continue Watching.
+        let next = p.next.request.as_ref().filter(|_| watched).map(|next| joshflix_core::store::LaterEpisode {
             video: next.video.clone(),
-            name: next.context.name.clone(),
-            episode_title: next.context.episode_title.clone(),
-            poster: next.context.poster.clone(),
-            background: next.context.background.clone(),
+            title: next.context.episode_title.clone(),
             thumbnail: next.context.thumbnail.clone(),
-            logo: next.context.logo.clone(),
-            position_secs: 0.0,
-            duration_secs: 0.0,
-            updated_at: 0,
-            up_next: true,
-            last_source: None,
-            hidden: false,
-            marked_from: None,
-            queued: None,
-            queued_prev_at: None,
         });
-        // Database writes fsync; keep them off the thread that renders video.
-        let store = self.svc.store.clone();
-        let write = tokio::task::spawn_blocking(move || {
-            // One transaction; the finished record remembers the Up next it
-            // queued, so Mark as unwatched can take it back.
-            if let Err(e) = store.save_progress_and_queue(progress, up_next) {
-                tracing::warn!("save progress: {e}");
-            }
-        });
-        // The page the player returned to read the store before this landed.
-        self.spawn(write, |c, _| c.progress_saved());
+        // Database writes fsync: they go to the ordered writer thread, never
+        // the thread that renders video. The page the player returns to read
+        // the store before this landed, so it refreshes when it does.
+        self.store_write(
+            move |store| {
+                if let Err(e) = store.save_progress_and_queue(progress, next) {
+                    tracing::warn!("save progress: {e}");
+                }
+            },
+            |c, ()| c.progress_saved(),
+        );
     }
 
     /// A progress write landed: refresh what shows it, unless still playing.
@@ -1163,8 +1151,10 @@ impl Controller {
         match key {
             Key::Back | Key::Stop => {
                 let mut request = p.request.clone();
-                // Nothing has played: the saved position stays as it was.
-                self.stop_playback(false);
+                // Nothing has played (the saved position stays), unless this
+                // is a reopen after a drop: then keep where it got to.
+                let played = p.started;
+                self.stop_playback(played);
                 self.pop_screen();
                 if failed {
                     request.preferred = None;

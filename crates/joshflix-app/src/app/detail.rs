@@ -589,27 +589,36 @@ impl Controller {
     fn toggle_library(&mut self) {
         let Some(detail) = self.detail.as_ref() else { return };
         let Some(preview) = detail.preview.clone() else { return };
-        let result = if detail.in_library {
-            self.svc.store.remove_from_library(&detail.id).map(|_| "Removed from My List")
-        } else {
-            self.svc
-                .store
-                .add_to_library(LibraryItem {
-                    id: preview.id.clone(),
-                    kind: preview.kind,
-                    name: preview.name.clone(),
-                    poster: preview.poster.clone(),
-                    background: preview.background.clone(),
-                    logo: preview.logo.clone(),
-                    release_info: preview.release_info.clone(),
-                    added_at: 0,
-                })
-                .map(|_| "Added to My List")
-        };
-        match result {
-            Ok(message) => self.toast(message),
-            Err(e) => self.toast(&e.to_string()),
-        }
-        self.refresh_detail_progress();
+        let (id, remove) = (detail.id.clone(), detail.in_library);
+        // The write (an fsync) runs on the store's writer thread.
+        self.store_write(
+            move |store| {
+                if remove {
+                    store.remove_from_library(&id).map(|_| "Removed from My List")
+                } else {
+                    store
+                        .add_to_library(LibraryItem {
+                            id: preview.id.clone(),
+                            kind: preview.kind,
+                            name: preview.name.clone(),
+                            poster: preview.poster.clone(),
+                            background: preview.background.clone(),
+                            logo: preview.logo.clone(),
+                            release_info: preview.release_info.clone(),
+                            added_at: 0,
+                        })
+                        .map(|_| "Added to My List")
+                }
+            },
+            |c, result| {
+                match result {
+                    Ok(message) => c.toast(message),
+                    Err(e) => c.toast(&e.to_string()),
+                }
+                if c.screen == Screen::Detail {
+                    c.refresh_detail_progress();
+                }
+            },
+        );
     }
 }

@@ -14,6 +14,7 @@ pub enum DialogAction {
     // The card and episode action sheet.
     RemoveFromContinue,
     MarkWatched,
+    MarkEarlierWatched,
     MarkUnwatched,
     ToggleList,
 }
@@ -99,7 +100,11 @@ impl Controller {
                 self.show_onboarding();
             }
             DialogAction::Close => self.menu_target = None,
-            DialogAction::RemoveFromContinue | DialogAction::MarkWatched | DialogAction::MarkUnwatched | DialogAction::ToggleList => {
+            DialogAction::RemoveFromContinue
+            | DialogAction::MarkWatched
+            | DialogAction::MarkEarlierWatched
+            | DialogAction::MarkUnwatched
+            | DialogAction::ToggleList => {
                 self.sheet_action(action);
             }
         }
