@@ -58,7 +58,7 @@ There is no `META-INF/` JAR signature: the v2/v3 signatures live in the APK sign
 
 Libraries are stored uncompressed and `zipalign -P 16` aligns them to 16 KB pages, so Android maps them directly from the APK (`extractNativeLibs="false"`).
 The xtask links the app with `-z max-page-size=16384`, because NDK r27 still defaults to 4 KB.
-A release arm64 APK is about 27 MB, almost all of it FFmpeg, mpv and Media3.
+A release arm64 APK is about 44 MB, almost all of it FFmpeg and mpv; Media3 adds about 1.5 MB.
 
 ## Media3 ExoPlayer
 
