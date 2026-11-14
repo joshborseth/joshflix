@@ -19,9 +19,10 @@ A native Android TV app for movies and shows, written entirely in Rust. It takes
 Screenshots of the first desktop build are in [docs/screenshots](docs/screenshots).
 
 - **Onboarding.** An animated welcome, then the Jedflix-style Real-Debrid step. The TV shows a QR code, your phone opens the relay's page, you paste the key and tap **Send to TV**. You can also type the key with an on-screen keyboard. The key is checked with Real-Debrid before it's saved.
-- **Home, Movies, Shows.** A hero for the focused title (backdrop, logo, rating, description) over rows: Continue Watching, My List, Popular, Top Rated, New this year and genre rows.
-- **Navigation.** A left rail that widens with labels when focused: Search, Home, Movies, Shows, Discover, My List, Settings.
-- **Search.** Our own on-screen keyboard with live movie and show results. A physical keyboard works too.
+- **Home, Movies, Shows.** A hero for the focused title (backdrop, logo, rating, description) over rows: Continue Watching, My List, Popular, Top Rated, New this year and genre rows. Rows from the last session show at once while fresh ones load.
+- **Navigation.** A left rail that widens with labels when focused: Search, Home, Movies, Shows, Discover, My List, Settings. Back from deep in a screen returns to its top, then to the rail; on Home, Back twice leaves the app.
+- **More options.** Hold OK (or press Menu) on a title or episode: Remove from Continue Watching, Mark as watched or unwatched, Mark watched up to here, and My List. Marking moves a show on to its next episode, and unmarking undoes exactly what marking did.
+- **Search.** Our own on-screen keyboard with live movie and show results. A physical keyboard works too. Before you type, it shows popular titles and your recent searches (cleared in Settings → About).
 - **Discover.** A grid filtered by type, sort (Popular, New, Top rated) and genre or year, loading more pages as you scroll.
 - **Detail pages.** Play or **Resume 42:10** with **Start over**, My List, cast and director. Shows have season chips and episode cards with thumbnails, progress and watched marks.
 - **Source picker.** A Stremio-style list ranked cached-first, then by quality and health, with badges (4K, Dolby Vision, HDR, REMUX, Atmos…), size, seeders and tracker.
@@ -34,10 +35,12 @@ Screenshots of the first desktop build are in [docs/screenshots](docs/screenshot
   - **Tracks:** audio and subtitle menus, with OpenSubtitles results added to the subtitle menu.
   - **Audio Normalization:** dynamic-range compression for clearer dialogue and quieter loud scenes (mpv's lavfi filters on desktop, Android's DynamicsProcessing effect on the TV).
   - **Frame-rate matching** on Android 11 and later.
-  - **Next episode:** a card in the last minute ("Next Episode", "Season 3 Finale · Up next", "Final Episode") that counts down to the end of the episode, then autoplays the same release family. Autoplay waits for the last frame; OK on the card skips the credits.
+  - **Next episode:** a card in the last minute ("Next Episode", "Season 3 Finale · Up next", "Final Episode") that counts down to the end of the episode, then autoplays the same release family. Autoplay waits for the last frame; OK on the card skips the credits. Episodes that haven't aired yet are never offered.
+  - **Dropped streams** reopen where they stopped (up to four times, waiting a little longer each time).
+  - **Remembered choices:** the audio language and whether subtitles are on carry over to the next episode and title.
 - **Remote.** Play/pause, rewind, fast-forward, next, captions and audio-track keys work in the player, and the Search key opens Search from anywhere. Back steps back through screens and leaves the app from Home.
 - **House lights.** While a video plays, the lights can follow the colors on screen. About once a second the TV reads a 48×27 copy of the picture (Android's PixelCopy, scaled on the GPU) and posts it to the relay. The relay finds the one color the picture reads as and streams it to the lights app, which paints a group of bulbs that color. The relay sends a new color only after the picture's color has clearly changed and held for 1.5 seconds, so cuts and flashes don't flicker the bulbs. The TV reads the picture only while the lights app listens. Turn it on in the lights app under Automations → Screen colors.
-- **Settings.** Real-Debrid account (change or remove key), playback toggles (including video decoding mode), subtitle language and size, source filters and About with a self-updater.
+- **Settings.** Real-Debrid account (change or remove key), playback toggles (including video decoding mode), subtitle language (from a list) and size, source filters and About with a self-updater.
 
 ## Repository layout
 
