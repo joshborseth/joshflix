@@ -57,6 +57,8 @@ pub struct Settings {
     pub audio_language: Option<String>,
     /// Launches that showed the "hold OK for more options" tip.
     pub hold_tips_shown: u8,
+    /// Searches that led to a title, newest first (shown on an empty Search).
+    pub recent_searches: Vec<String>,
 }
 
 impl Default for Settings {
@@ -77,6 +79,7 @@ impl Default for Settings {
             dismissed_update_code: None,
             audio_language: None,
             hold_tips_shown: 0,
+            recent_searches: Vec::new(),
         }
     }
 }

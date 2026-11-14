@@ -23,6 +23,8 @@ pub struct SearchCtl {
     /// Blinks the caret twice a second (only while Search shows).
     caret: slint::Timer,
     caret_on: bool,
+    /// Focus is on the recent-search chips (which one).
+    recent_focus: Option<usize>,
 }
 
 /// Caret blink half-period.
@@ -52,6 +54,7 @@ impl SearchCtl {
             debounce: slint::Timer::default(),
             caret: slint::Timer::default(),
             caret_on: true,
+            recent_focus: None,
         }
     }
 }
@@ -89,6 +92,9 @@ impl Controller {
         state.set_key_index(s.keyboard.index as i32);
         state.set_keyboard_active(s.keyboard_active);
         state.set_focused_row(s.row as i32);
+        let recent: Vec<slint::SharedString> = self.settings.recent_searches.iter().map(shared).collect();
+        state.set_recent(ModelRc::new(VecModel::from(recent)));
+        state.set_recent_focused(s.recent_focus.map_or(-1, |i| i as i32));
         state.set_searching(s.searching > 0);
         let has_results = s.rows.iter().any(RowCtl::is_navigable);
         let hint = if s.query.trim().len() == 1 {
@@ -232,6 +238,31 @@ impl Controller {
             return true;
         }
 
+        // Recent-search chips (above the results while nothing is typed).
+        if let Some(index) = self.search.recent_focus {
+            let count = self.settings.recent_searches.len();
+            match key {
+                Key::Left if index > 0 => self.search.recent_focus = Some(index - 1),
+                Key::Left | Key::Back => {
+                    self.search.recent_focus = None;
+                    self.search.keyboard_active = true;
+                }
+                Key::Right => self.search.recent_focus = Some((index + 1).min(count.saturating_sub(1))),
+                Key::Down => self.search.recent_focus = None,
+                Key::Ok => {
+                    self.search.recent_focus = None;
+                    if let Some(query) = self.settings.recent_searches.get(index).cloned() {
+                        self.search.query = query;
+                        self.search.debounce.stop();
+                        self.run_search();
+                    }
+                }
+                _ => {}
+            }
+            self.push_search();
+            return true;
+        }
+
         // Results.
         let row_index = self.search.row;
         if self.search.rows.get(row_index).is_none() {
@@ -244,6 +275,11 @@ impl Controller {
                 let target = if key == Key::Up { row_index.checked_sub(1) } else { Some(row_index + 1) };
                 if let Some(t) = target.filter(|t| self.search.rows.get(*t).is_some_and(RowCtl::is_navigable)) {
                     self.search.row = t;
+                } else if key == Key::Up
+                    && self.search.query.trim().is_empty()
+                    && !self.settings.recent_searches.is_empty()
+                {
+                    self.search.recent_focus = Some(0);
                 }
             }
             Key::Left => {
@@ -270,6 +306,15 @@ impl Controller {
             Key::Ok => {
                 let row = &self.search.rows[row_index];
                 if let Some(item) = row.items.get(row.focused).cloned() {
+                    // A search that found something is worth offering again.
+                    let query = self.search.query.trim().to_owned();
+                    if query.len() >= 2 {
+                        self.save_settings(|s| {
+                            s.recent_searches.retain(|q| !q.eq_ignore_ascii_case(&query));
+                            s.recent_searches.insert(0, query);
+                            s.recent_searches.truncate(6);
+                        });
+                    }
                     self.open(item.target);
                 }
                 return true;

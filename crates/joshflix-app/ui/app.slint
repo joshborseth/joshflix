@@ -3,7 +3,7 @@
 import { Theme, Icons, Press } from "theme.slint";
 export { Press }
 import { Screen, Poster, Row, Hero, EpisodeCard, DetailButton, SourceItem, TrackItem, SettingItem, NavItem, KeyCap } from "types.slint";
-import { Toast } from "components.slint";
+import { Toast, OptionList } from "components.slint";
 import { Rail } from "rail.slint";
 import { BrowseScreen } from "browse.slint";
 import { DetailScreen } from "detail.slint";
@@ -131,6 +131,8 @@ export global SearchState {
     in property <bool> searching;
     in property <string> hint;
     in property <bool> caret-on: true;
+    in property <[string]> recent;
+    in property <int> recent-focused: -1;
 }
 
 export global DiscoverState {
@@ -165,6 +167,10 @@ export global SettingsState {
     in property <float> busy-progress: -1;
     // Real-Debrid key change dialog
     in property <bool> pairing-open;
+    // Subtitle language list
+    in property <bool> picker-open;
+    in property <[TrackItem]> picker-options;
+    in property <int> picker-index;
 }
 
 export global PairingState {
@@ -343,6 +349,8 @@ export component AppWindow inherits Window {
         searching: SearchState.searching;
         hint: SearchState.hint;
         caret-on: SearchState.caret-on;
+        recent: SearchState.recent;
+        recent-focused: SearchState.recent-focused;
         active: AppState.content-active;
     }
 
@@ -379,6 +387,13 @@ export component AppWindow inherits Window {
         section-blurb: SettingsState.section-blurb;
         busy-progress: SettingsState.busy-progress;
         active: AppState.content-active && !SettingsState.pairing-open;
+    }
+    if AppState.screen == Screen.settings && SettingsState.picker-open: OptionList {
+        x: root.width - self.width - Theme.safe-x - 40px;
+        y: (root.height - self.height) / 2;
+        title: "Subtitle language";
+        options: SettingsState.picker-options;
+        focused-index: SettingsState.picker-index;
     }
 
     // Under the player, the start cover hides everything until the first frame.

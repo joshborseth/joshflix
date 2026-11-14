@@ -86,11 +86,13 @@ pub struct SettingsCtl {
     downloading: Option<watch::Sender<bool>>,
     /// Last download percentage shown in a toast (outside Settings).
     download_toast_pct: u32,
+    /// The subtitle-language list is open: the focused row in `LANGUAGES`.
+    language_picker: Option<usize>,
 }
 
 impl SettingsCtl {
     pub fn new() -> Self {
-        Self { section: 0, zone: 0, index: 0, items: Vec::new(), update_status: String::new(), downloading: None, download_toast_pct: 0 }
+        Self { section: 0, zone: 0, index: 0, items: Vec::new(), update_status: String::new(), downloading: None, download_toast_pct: 0, language_picker: None }
     }
 }
 
@@ -127,6 +129,8 @@ fn caps_label(caps: &joshflix_core::release::DisplayCaps) -> String {
 
 impl Controller {
     pub fn show_settings(&mut self) {
+        self.settings_ctl.language_picker = None;
+        self.push_language_picker();
         let icons = Icons::get(&self.ui);
         let sections: Vec<NavItem> = [
             ("Real-Debrid", icons.get_bolt()),
@@ -220,6 +224,22 @@ impl Controller {
         self.push_settings();
     }
 
+    fn push_language_picker(&self) {
+        let state = SettingsState::get(&self.ui);
+        let Some(index) = self.settings_ctl.language_picker else {
+            state.set_picker_open(false);
+            return;
+        };
+        let current = self.settings.subtitle_languages.first().cloned().unwrap_or_default();
+        let options: Vec<crate::TrackItem> = LANGUAGES
+            .iter()
+            .map(|(code, name)| crate::TrackItem { label: (*name).into(), selected: *code == current })
+            .collect();
+        state.set_picker_options(slint::ModelRc::new(slint::VecModel::from(options)));
+        state.set_picker_index(index as i32);
+        state.set_picker_open(true);
+    }
+
     fn push_settings(&self) {
         let c = &self.settings_ctl;
         let state = SettingsState::get(&self.ui);
@@ -246,6 +266,22 @@ impl Controller {
     pub fn settings_key(&mut self, key: Key) -> bool {
         if self.pairing_open() {
             return self.pairing_key(key);
+        }
+        if let Some(index) = self.settings_ctl.language_picker {
+            match key {
+                Key::Up => self.settings_ctl.language_picker = Some(index.saturating_sub(1)),
+                Key::Down => self.settings_ctl.language_picker = Some((index + 1).min(LANGUAGES.len() - 1)),
+                Key::Ok => {
+                    self.settings_ctl.language_picker = None;
+                    let code = LANGUAGES[index].0.to_owned();
+                    self.save_settings(|s| s.subtitle_languages = vec![code]);
+                    self.build_settings();
+                }
+                Key::Back | Key::Left => self.settings_ctl.language_picker = None,
+                _ => {}
+            }
+            self.push_language_picker();
+            return true;
         }
         let c = &mut self.settings_ctl;
         match (c.zone, key) {
@@ -336,6 +372,13 @@ impl Controller {
             Action::SubtitlesOn => self.save_settings(|s| s.subtitles_enabled = !s.subtitles_enabled),
             Action::HideJunk => self.save_settings(|s| s.filters.hide_junk = !s.filters.hide_junk),
             Action::MatchDisplay => self.save_settings(|s| s.filters.match_display = !s.filters.match_display),
+            // OK opens the whole list; Left and Right still step through it.
+            Action::SubtitleLanguage if ok => {
+                let current = self.settings.subtitle_languages.first().cloned().unwrap_or_else(|| "eng".into());
+                self.settings_ctl.language_picker = Some(LANGUAGES.iter().position(|(c, _)| *c == current).unwrap_or(0));
+                self.push_language_picker();
+                return;
+            }
             Action::SubtitleLanguage => {
                 let codes: Vec<&str> = LANGUAGES.iter().map(|(c, _)| *c).collect();
                 let current = self.settings.subtitle_languages.first().cloned().unwrap_or_else(|| "eng".into());

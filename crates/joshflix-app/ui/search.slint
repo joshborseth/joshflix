@@ -1,6 +1,6 @@
 import { Theme, Icons } from "theme.slint";
 import { Row, KeyCap } from "types.slint";
-import { KeyboardGrid, PosterRow, Spinner } from "components.slint";
+import { KeyboardGrid, PosterRow, Spinner, Chip } from "components.slint";
 
 export component SearchScreen inherits Rectangle {
     in property <string> query;
@@ -15,6 +15,10 @@ export component SearchScreen inherits Rectangle {
     // Blinks from a Rust timer: an animation-tick() blink redrew the whole
     // screen 60 times a second.
     in property <bool> caret-on: true;
+    // Recent searches (shown while nothing is typed); -1 = none focused.
+    in property <[string]> recent;
+    in property <int> recent-focused: -1;
+    property <bool> show-recent: root.query == "" && root.recent.length > 0 && !root.searching && root.hint == "";
     in property <length> left-pad: Theme.rail-collapsed + 28px;
 
     property <length> kb-w: 6 * (34px + 5px) - 5px;
@@ -109,14 +113,26 @@ export component SearchScreen inherits Rectangle {
             font-size: Theme.text-lg;
             wrap: word-wrap;
         }
+        if root.show-recent: HorizontalLayout {
+            x: 0;
+            y: 12px - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
+            height: 28px;
+            spacing: 8px;
+            alignment: start;
+            animate y { duration: Theme.med; easing: ease-out-quart; }
+            for query[i] in root.recent: Chip {
+                label: query;
+                focused: root.active && i == root.recent-focused;
+            }
+        }
         VerticalLayout {
-            y: (root.hint != "" || root.searching ? 56px : 6px) - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
+            y: (root.hint != "" || root.searching || root.show-recent ? 56px : 6px) - (!root.keyboard-active && root.focused-row > 0 ? 200px * root.focused-row : 0px);
             alignment: start;
             animate y { duration: Theme.med; easing: ease-out-quart; }
             for row[i] in root.rows: PosterRow {
                 data: row;
                 left-pad: 14px;
-                active: root.active && !root.keyboard-active && i == root.focused-row;
+                active: root.active && !root.keyboard-active && root.recent-focused < 0 && i == root.focused-row;
             }
         }
     }
