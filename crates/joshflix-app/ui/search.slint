@@ -120,6 +120,13 @@ export component SearchScreen inherits Rectangle {
             spacing: 8px;
             alignment: start;
             animate y { duration: Theme.med; easing: ease-out-quart; }
+            Text {
+                text: "Recent";
+                color: Theme.text-muted;
+                font-size: Theme.text-sm;
+                font-weight: 600;
+                vertical-alignment: center;
+            }
             for query[i] in root.recent: Chip {
                 label: query;
                 focused: root.active && i == root.recent-focused;

@@ -101,7 +101,7 @@ impl Controller {
             let mut buttons = vec![mark];
             // Catching up after watching elsewhere: everything before it too.
             if video.episode.is_some_and(|e| e > 1) || video.season.is_some_and(|s| s > 1) {
-                buttons.push(("Mark earlier episodes as watched", icons.get_check(), false, DialogAction::MarkEarlierWatched));
+                buttons.push(("Mark earlier episodes as watched", icons.get_rewind(), false, DialogAction::MarkEarlierWatched));
             }
             buttons.push(("Cancel", icons.get_back(), false, DialogAction::Close));
             self.menu_target = Some(MenuTarget::Episode { video });
@@ -119,7 +119,7 @@ impl Controller {
             .as_ref()
             .filter(|p| card.kind == MediaKind::Series && !p.is_watched())
             .and_then(|p| p.video.episode_label())
-            .map(|label| format!("Mark {label} as watched"));
+            .map(|label| format!("Mark {} as watched", label.replace('E', " E")));
         if let Some(label) = &episode_label {
             buttons.push((label.as_str(), icons.get_check(), false, DialogAction::MarkWatched));
         }

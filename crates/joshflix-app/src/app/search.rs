@@ -280,6 +280,13 @@ impl Controller {
                     && !self.settings.recent_searches.is_empty()
                 {
                     self.search.recent_focus = Some(0);
+                    // The row behind the chips goes back to its start.
+                    let row = &mut self.search.rows[row_index];
+                    if row.focused != 0 {
+                        row.focused = 0;
+                        let data = row.to_row();
+                        self.search.model.set_row_data(row_index, data);
+                    }
                 }
             }
             Key::Left => {

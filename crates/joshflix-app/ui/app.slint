@@ -388,6 +388,9 @@ export component AppWindow inherits Window {
         busy-progress: SettingsState.busy-progress;
         active: AppState.content-active && !SettingsState.pairing-open;
     }
+    if AppState.screen == Screen.settings && SettingsState.picker-open: Rectangle {
+        background: #05060acc;  // dims the page behind, like the other menus
+    }
     if AppState.screen == Screen.settings && SettingsState.picker-open: OptionList {
         x: root.width - self.width - Theme.safe-x - 40px;
         y: (root.height - self.height) / 2;

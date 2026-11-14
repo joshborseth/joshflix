@@ -542,6 +542,17 @@ export component OptionList inherits Rectangle {
                 }
             }
         }
+        // Fades where more options are hidden: the list scrolls.
+        if root.scroll > 0: Rectangle {
+            y: 0;
+            height: 24px;
+            background: @linear-gradient(180deg, Theme.surface 0%, #15192300 100%);
+        }
+        if root.scroll < root.options.length * root.item-h - root.visible-h - 1px: Rectangle {
+            y: parent.height - 24px;
+            height: 24px;
+            background: @linear-gradient(180deg, #15192300 0%, Theme.surface 100%);
+        }
     }
 }
 

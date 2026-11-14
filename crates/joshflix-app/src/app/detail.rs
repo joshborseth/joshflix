@@ -86,7 +86,8 @@ impl DetailCtl {
         }
         let episode = self.episodes.get(self.episode_index)?;
         let video = VideoRef::episode(&self.id, episode.season, episode.episode);
-        let title = format!("{} · {}", video.episode_label().unwrap_or_default(), episode.title);
+        // "S01 E05", as on the Play button.
+        let title = format!("{} · {}", video.episode_label().unwrap_or_default().replace('E', " E"), episode.title);
         let watched = self.progress.get(&episode.id).is_some_and(Progress::is_watched);
         Some((video, title, watched))
     }
